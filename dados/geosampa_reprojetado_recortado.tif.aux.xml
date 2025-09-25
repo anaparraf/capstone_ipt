@@ -1,12 +1,3 @@
-<PAMDataset>
-  <PAMRasterBand band="1">
-    <Metadata>
-      <MDI key="STATISTICS_APPROXIMATE">YES</MDI>
-      <MDI key="STATISTICS_MINIMUM">759.74822998047</MDI>
-      <MDI key="STATISTICS_MAXIMUM">814.33306884766</MDI>
-      <MDI key="STATISTICS_MEAN">787.32052678979</MDI>
-      <MDI key="STATISTICS_STDDEV">10.831018419293</MDI>
-      <MDI key="STATISTICS_VALID_PERCENT">99.95</MDI>
-    </Metadata>
-  </PAMRasterBand>
-</PAMDataset>
+version https://git-lfs.github.com/spec/v1
+oid sha256:e05f78ff0bc3cf77fdf19ac1ed8767bd475e8096ff76d2f1665ab1493cb1bf05
+size 436
