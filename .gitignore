@@ -1,4 +1,7 @@
 dados/ANADEM_AricanduvaBufferUTM.tif
 dados/MDTGeosampa_AricanduvaBufferUTM.tif
 *.xml
+__pycache__/
+*.pyc
 myenv/
+venv/
