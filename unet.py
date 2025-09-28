@@ -324,7 +324,7 @@ def train_adaptive_unet(low_res_files, high_res_files, target_resolution=None,
                            num_workers=0, pin_memory=True if torch.cuda.is_available() else False)
     
     # Modelo, otimizador e loss
-    model = ResolutionAwareUNet(base_filters=16).to(device)
+    model = ResolutionAwareUNet(base_filters=32).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     criterion = PerceptualLoss()
@@ -397,7 +397,7 @@ def generate_super_resolution(model_path, input_raster_path, output_path,
     
     # Carregar modelo
     checkpoint = torch.load(model_path, map_location=device)
-    model = ResolutionAwareUNet(base_filters=16).to(device)
+    model = ResolutionAwareUNet(base_filters=32).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
@@ -480,7 +480,7 @@ if __name__ == "__main__":
     model = train_adaptive_unet(
         low_res_files, high_res_files, 
         target_resolution=target_resolution,
-        epochs=40,
+        epochs=120,
         batch_size=2,
         patch_size=128
     )
@@ -489,7 +489,7 @@ if __name__ == "__main__":
     generate_super_resolution(
         "adaptive_unet.pth",
         "dados/rec_anadem_teste.tif",
-        "output/anadem_teste_16f_40ep_10m.tif",
+        "output/anadem_teste_16f_80ep_10m.tif",
         target_resolution=10
     )
 
@@ -497,6 +497,6 @@ if __name__ == "__main__":
     generate_super_resolution(
         "adaptive_unet.pth",
         "dados/rec_anadem.tif",
-        "output/anadem_16f_40ep_10m.tif",
+        "output/anadem_16f_80ep_10m.tif",
         target_resolution=10
     )
