@@ -472,15 +472,15 @@ def generate_super_resolution(model_path, input_raster_path, output_path,
 # Exemplo de uso
 if __name__ == "__main__":
     # Arquivos de exemplo - substitua pelos seus caminhos
-    low_res_files = ["dados/rec_geosampa_10m.tif"]
-    high_res_files = ["dados/rec_geosampa_30m.tif"]
+    low_res_files = ["dados/rec_geosampa_30m.tif"]
+    high_res_files = ["dados/rec_geosampa_10m.tif"]
     
     # Treinar modelo para resolução específica
     target_resolution = 10  
     model = train_adaptive_unet(
         low_res_files, high_res_files, 
         target_resolution=target_resolution,
-        epochs=120,
+        epochs=50,
         batch_size=2,
         patch_size=128
     )
@@ -489,7 +489,7 @@ if __name__ == "__main__":
     generate_super_resolution(
         "adaptive_unet.pth",
         "dados/rec_anadem_teste.tif",
-        "output/anadem_teste_16f_80ep_10m.tif",
+        "output/anadem_teste_32f_50ep_10m.tif",
         target_resolution=10
     )
 
@@ -497,6 +497,6 @@ if __name__ == "__main__":
     generate_super_resolution(
         "adaptive_unet.pth",
         "dados/rec_anadem.tif",
-        "output/anadem_16f_80ep_10m.tif",
+        "output/anadem_32f_50ep_10m.tif",
         target_resolution=10
     )
