@@ -1,0 +1,114 @@
+RELATÓRIO DE BENCHMARK - SUPER RESOLUÇÃO
+==================================================
+
+Modelo avaliado: adaptive_unet.pth
+Data: 2025-09-29 23:05:37
+
+
+RESOLUÇÃO ALVO: 0.5m
+------------------------------
+Nenhum resultado válido para esta resolução.
+
+RESOLUÇÃO ALVO: 2.5m
+------------------------------
+Nenhum resultado válido para esta resolução.
+
+RESOLUÇÃO ALVO: 5m
+------------------------------
+PSNR:
+  Média: 9.279317
+  Desvio: 0.000000
+  Min: 9.279317
+  Max: 9.279317
+SSIM:
+  Média: 0.037784
+  Desvio: 0.000000
+  Min: 0.037784
+  Max: 0.037784
+MSE:
+  Média: 1397.885255
+  Desvio: 0.000000
+  Min: 1397.885255
+  Max: 1397.885255
+Correlation:
+  Média: 0.027447
+  Desvio: 0.000000
+  Min: 0.027447
+  Max: 0.027447
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 7m
+------------------------------
+PSNR:
+  Média: 10.525509
+  Desvio: 0.000000
+  Min: 10.525509
+  Max: 10.525509
+SSIM:
+  Média: 0.097722
+  Desvio: 0.000000
+  Min: 0.097722
+  Max: 0.097722
+MSE:
+  Média: 1365.405421
+  Desvio: 0.000000
+  Min: 1365.405421
+  Max: 1365.405421
+Correlation:
+  Média: 0.197979
+  Desvio: 0.000000
+  Min: 0.197979
+  Max: 0.197979
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 10m
+------------------------------
+PSNR:
+  Média: 11.177128
+  Desvio: 0.000000
+  Min: 11.177128
+  Max: 11.177128
+SSIM:
+  Média: 0.198693
+  Desvio: 0.000000
+  Min: 0.198693
+  Max: 0.198693
+MSE:
+  Média: 1593.845020
+  Desvio: 0.000000
+  Min: 1593.845020
+  Max: 1593.845020
+Correlation:
+  Média: 0.217283
+  Desvio: 0.000000
+  Min: 0.217283
+  Max: 0.217283
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 15m
+------------------------------
+PSNR:
+  Média: 9.076666
+  Desvio: 0.000000
+  Min: 9.076666
+  Max: 9.076666
+SSIM:
+  Média: 0.197564
+  Desvio: 0.000000
+  Min: 0.197564
+  Max: 0.197564
+MSE:
+  Média: 5063.404754
+  Desvio: 0.000000
+  Min: 5063.404754
+  Max: 5063.404754
+Correlation:
+  Média: 0.039235
+  Desvio: 0.000000
+  Min: 0.039235
+  Max: 0.039235
+
+Número de arquivos processados: 1

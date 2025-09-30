@@ -9,7 +9,7 @@ import os
 import time
 
 # Importar as classes do arquivo principal
-# from unet_superres import ResolutionAwareUNet, generate_super_resolution
+from unet import ResolutionAwareUNet, generate_super_resolution
 
 def evaluate_super_resolution(reference_path, predicted_path, nodata_value=None):
     """
@@ -28,96 +28,88 @@ def evaluate_super_resolution(reference_path, predicted_path, nodata_value=None)
         ref_img = src.read(1).astype(np.float32)
         if nodata_value is None:
             nodata_value = src.nodata
-    
+
     with rasterio.open(predicted_path) as src:
         pred_img = src.read(1).astype(np.float32)
-    
+
     # Verificar se as dimensões são compatíveis
     if ref_img.shape != pred_img.shape:
         print(f"Aviso: Dimensões diferentes - Ref: {ref_img.shape}, Pred: {pred_img.shape}")
-        # Redimensionar para o menor tamanho comum
         min_h = min(ref_img.shape[0], pred_img.shape[0])
         min_w = min(ref_img.shape[1], pred_img.shape[1])
         ref_img = ref_img[:min_h, :min_w]
         pred_img = pred_img[:min_h, :min_w]
-    
-    # Criar máscara para pixels válidos
+
+    # Máscara de pixels válidos (NoData, NaN, inf, valores extremos)
+    valid_mask = np.ones_like(ref_img, dtype=bool)
     if nodata_value is not None:
-        valid_mask = (ref_img != nodata_value) & (pred_img != nodata_value)
-    else:
-        valid_mask = np.isfinite(ref_img) & np.isfinite(pred_img)
-    
-    if not np.any(valid_mask):
-        print("Erro: Nenhum pixel válido encontrado!")
-        return None
-    
-    # Extrair apenas pixels válidos para cálculo de métricas
+        valid_mask &= (ref_img != nodata_value) & (pred_img != nodata_value)
+    valid_mask &= np.isfinite(ref_img) & np.isfinite(pred_img)
+    # Remover valores extremos (outliers)
     ref_valid = ref_img[valid_mask]
     pred_valid = pred_img[valid_mask]
-    
-    # Normalizar para [0, 1] para métricas
-    ref_min, ref_max = ref_valid.min(), ref_valid.max()
-    pred_min, pred_max = pred_valid.min(), pred_valid.max()
-    
-    if ref_max - ref_min > 0:
-        ref_norm = (ref_valid - ref_min) / (ref_max - ref_min)
-    else:
-        ref_norm = np.zeros_like(ref_valid)
-    
-    if pred_max - pred_min > 0:
-        pred_norm = (pred_valid - pred_min) / (pred_max - pred_min)
-    else:
-        pred_norm = np.zeros_like(pred_valid)
-    
-    # Calcular métricas
+    if len(ref_valid) > 0:
+        ref_q1, ref_q99 = np.percentile(ref_valid, [1, 99])
+        pred_q1, pred_q99 = np.percentile(pred_valid, [1, 99])
+        extreme_mask = (ref_valid >= ref_q1) & (ref_valid <= ref_q99) & (pred_valid >= pred_q1) & (pred_valid <= pred_q99)
+        ref_valid = ref_valid[extreme_mask]
+        pred_valid = pred_valid[extreme_mask]
+
+    if not np.any(ref_valid) or not np.any(pred_valid):
+        print("Erro: Nenhum pixel válido encontrado!")
+        return None
+
+    # Normalização robusta para [0, 1] (percentis)
+    ref_min, ref_max = np.percentile(ref_valid, [2, 98])
+    pred_min, pred_max = np.percentile(pred_valid, [2, 98])
+    ref_norm = np.clip((ref_valid - ref_min) / (ref_max - ref_min + 1e-8), 0, 1) if ref_max > ref_min else np.zeros_like(ref_valid)
+    pred_norm = np.clip((pred_valid - pred_min) / (pred_max - pred_min + 1e-8), 0, 1) if pred_max > pred_min else np.zeros_like(pred_valid)
+
     metrics = {}
-    
     try:
         # Mean Squared Error
         metrics['MSE'] = mean_squared_error(ref_valid, pred_valid)
         metrics['MSE_norm'] = mean_squared_error(ref_norm, pred_norm)
-        
-        # Root Mean Squared Error
         metrics['RMSE'] = np.sqrt(metrics['MSE'])
-        
-        # Mean Absolute Error
         metrics['MAE'] = np.mean(np.abs(ref_valid - pred_valid))
-        
+        metrics['MAE_norm'] = np.mean(np.abs(ref_norm - pred_norm))
+
         # Peak Signal-to-Noise Ratio
-        if ref_max - ref_min > 0:
-            metrics['PSNR'] = peak_signal_noise_ratio(ref_norm, pred_norm, data_range=1.0)
-        else:
-            metrics['PSNR'] = float('inf')
-        
+        metrics['PSNR'] = peak_signal_noise_ratio(ref_norm, pred_norm, data_range=1.0) if ref_max > ref_min else float('inf')
+
         # Structural Similarity Index
-        # Para SSIM, precisamos usar as imagens completas (com forma 2D)
-        ref_img_norm = np.zeros_like(ref_img)
-        pred_img_norm = np.zeros_like(pred_img)
-        
-        ref_img_norm[valid_mask] = ref_norm
-        pred_img_norm[valid_mask] = pred_norm
-        
-        # SSIM precisa de pelo menos uma janela de 7x7
-        if ref_img_norm.shape[0] >= 7 and ref_img_norm.shape[1] >= 7:
-            metrics['SSIM'] = structural_similarity(ref_img_norm, pred_img_norm, 
-                                                  data_range=1.0, win_size=7)
+        # Para SSIM, reconstruir imagens 2D (opcional: pode ser só para pixels válidos)
+        # Aqui, SSIM só se houver pixels suficientes
+        if len(ref_valid) >= 49:
+            metrics['SSIM'] = structural_similarity(ref_norm, pred_norm, data_range=1.0)
         else:
             metrics['SSIM'] = 0.0
-        
+
         # Correlation coefficient
         if len(ref_valid) > 1:
             correlation_matrix = np.corrcoef(ref_valid, pred_valid)
             metrics['Correlation'] = correlation_matrix[0, 1] if not np.isnan(correlation_matrix[0, 1]) else 0.0
         else:
             metrics['Correlation'] = 0.0
-        
+
         # Relative error
         metrics['Relative_Error'] = np.mean(np.abs(ref_valid - pred_valid) / (np.abs(ref_valid) + 1e-8))
-        
+
+        # R2 Score
+        ss_res = np.sum((ref_valid - pred_valid) ** 2)
+        ss_tot = np.sum((ref_valid - np.mean(ref_valid)) ** 2)
+        metrics['R2'] = 1 - ss_res / (ss_tot + 1e-8)
+
+        # Bias
+        metrics['Bias'] = np.mean(pred_valid - ref_valid)
+
+        # Mediana dos erros
+        metrics['Median_AE'] = np.median(np.abs(ref_valid - pred_valid))
+
     except Exception as e:
         print(f"Erro ao calcular métricas: {e}")
         return None
-    
+
     return metrics
 
 
@@ -357,7 +349,7 @@ class SuperResolutionBenchmark:
         
         # Criar visualizações
         print("\n📈 Gerando visualizações...")
-        create_resolution_comparison_plot(self.results, "resolution_comparison.png")
+        create_resolution_comparison_plot(self.results, "evaluation_results/resolution_comparison.png")
         
         return self.results
     
@@ -406,15 +398,15 @@ def example_evaluation():
     """
     # Caminhos dos arquivos (substitua pelos seus)
     model_path = "adaptive_unet.pth"
-    test_files = ["dados/rec_anadem.tif"]  # Arquivos de baixa resolução para teste
-    target_resolutions = [0.5, 1.0, 2.0, 5.0]  # Resoluções alvo em metros
-    
+    test_files = ["dados/ANADEM_AricanduvaBufferUTM.tif"]  # Arquivos de baixa resolução para teste
+    # target_resolutions = [0.5, 1.0, 2.0, 5.0]  # Resoluções alvo em metros
+    target_resolutions = [0.5, 2.5, 5, 7, 10, 15] 
     # Executar benchmark
     benchmark = SuperResolutionBenchmark(model_path)
     results = benchmark.run_benchmark(test_files, target_resolutions)
     
     # Gerar relatório
-    benchmark.generate_report("meu_benchmark_report.txt")
+    benchmark.generate_report("evaluation_results/meu_benchmark_report.txt")
     
     # Visualização específica (se você tiver arquivos de referência)
     # visualize_comparison(
