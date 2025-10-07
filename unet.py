@@ -480,16 +480,17 @@ if __name__ == "__main__":
     model = train_adaptive_unet(
         low_res_files, high_res_files, 
         target_resolution=target_resolution,
-        epochs=80,
+        epochs=20,
         batch_size=2,
-        patch_size=128
+        patch_size= 256 #128
+
     )
     
     # Gerar super resolução
     generate_super_resolution(
         "adaptive_unet.pth",
         "dados/ANADEM_AricanduvaBufferUTM.tif",
-        "output/ANADEM_Aricanduva_16f_80ep_10m.tif",
+        "output/ANADEM_Aricanduva_16f_20ep_10_bs2_p256.tif",
         target_resolution=10
     )
 
