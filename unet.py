@@ -571,18 +571,29 @@ if __name__ == "__main__":
     model = train_adaptive_unet(
         low_res_files, high_res_files, 
         target_resolution=target_resolution,
+<<<<<<< HEAD
         epochs=20,              # para teste rápido coloque poucas épocas
         batch_size=2,
         patch_size=128,
         save_path="adaptive_unet_normalized.pth",
         normalize=True,         # ATIVE a normalização (recomendado)
         use_simple_loss=True    # L1 para debug inicial
+=======
+        epochs=20,
+        batch_size=2,
+        patch_size= 256 #128
+
+>>>>>>> draft
     )
     
     # Gerar super resolução
     generate_super_resolution(
         "adaptive_unet_normalized.pth",
         "dados/ANADEM_AricanduvaBufferUTM.tif",
+<<<<<<< HEAD
         "output/ANADEM_Aricanduva_20ep_16f_10m_normalized.tif",
+=======
+        "output/ANADEM_Aricanduva_16f_20ep_10_bs2_p256.tif",
+>>>>>>> draft
         target_resolution=10
     )
