@@ -330,7 +330,7 @@ class PerceptualLoss(nn.Module):
 
 def train_adaptive_unet(low_res_files, high_res_files, target_resolution=None, 
                        epochs=100, batch_size=4, learning_rate=1e-4, 
-                       patch_size=128, save_path="adaptive_unet.pth",
+                       patch_size=128, save_path="model/adaptive_unet.pth",
                        normalize=True, use_simple_loss=False):
     """
     Treina a U-Net adaptativa
