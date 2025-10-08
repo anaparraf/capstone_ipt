@@ -387,84 +387,87 @@ def train_adaptive_unet(low_res_files, high_res_files, target_resolution=None,
     return model
 
 
-def generate_super_resolution(model_path, input_raster_path, output_path, 
-                            target_resolution=None, device=None, tile_size=512):
+def generate_super_resolution(
+    model_path, input_raster_path, output_path,
+    target_resolution=None, device=None, tile_size=512, overlap=0.2
+):
     """
-    Gera super resolução de um raster usando modelo treinado, processando em tiles para evitar OOM.
+    Super-resolution with tile overlap and blending to avoid block artifacts.
     """
+    import torch
+    import numpy as np
+    import rasterio
+    import torch.nn.functional as F
+
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
     checkpoint = torch.load(model_path, map_location=device)
     model = ResolutionAwareUNet(base_filters=16).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    
-    print(f"Modelo carregado. Resolução de treinamento: {checkpoint.get('target_resolution', 'N/A')}m")
-    
+
     with rasterio.open(input_raster_path) as src:
         img = src.read(1).astype(np.float32)
         profile = src.profile.copy()
         current_res_x = abs(src.transform.a)
         current_res_y = abs(src.transform.e)
         current_resolution = (current_res_x + current_res_y) / 2
-        
+
         if target_resolution:
             scale_factor = current_resolution / target_resolution
-            print(f"Fator de escala para {target_resolution}m: {scale_factor:.2f}x")
         else:
             scale_factor = 2.0
             target_resolution = current_resolution / scale_factor
-        
-        dataset_dummy = AdaptiveSuperResTiffDataset([input_raster_path], [input_raster_path])
-        img_norm = dataset_dummy._normalize_image(img, src.nodata)
-        
-        # Calculate output size
+
+        # Global normalization
+        valid_mask = img != src.nodata
+        valid_data = img[valid_mask]
+        p2, p98 = np.percentile(valid_data, [2, 98])
+        img_norm = (img - p2) / (p98 - p2 + 1e-8)
+        img_norm[~valid_mask] = 0
+
         out_height = int(img.shape[0] * scale_factor)
         out_width = int(img.shape[1] * scale_factor)
         output_array = np.zeros((out_height, out_width), dtype=np.float32)
-        
-        # Process in tiles
-        step = tile_size
+        weight_array = np.zeros_like(output_array)
+
+        step = int(tile_size * (1 - overlap))
         for i in range(0, img.shape[0], step):
             for j in range(0, img.shape[1], step):
-                tile = img_norm[i:i+step, j:j+step]
-                tile_tensor = torch.from_numpy(tile).unsqueeze(0).unsqueeze(0).to(device)
-                # Upsample tile if needed
-                tile_out_h = int(tile.shape[0] * scale_factor)
-                tile_out_w = int(tile.shape[1] * scale_factor)
+                tile = img_norm[i:i+tile_size, j:j+tile_size]
+                tile_h, tile_w = tile.shape
+                tile_tensor = torch.from_numpy(tile).unsqueeze(0).unsqueeze(0).to(device).float()
+                tile_out_h = int(tile_h * scale_factor)
+                tile_out_w = int(tile_w * scale_factor)
                 with torch.no_grad():
                     tile_tensor_up = F.interpolate(tile_tensor, size=(tile_out_h, tile_out_w), mode='bilinear', align_corners=False)
                     tile_out = model(tile_tensor_up, target_scale=scale_factor)
                     tile_out_np = tile_out.cpu().numpy().squeeze()
-                # Place tile in output array
                 out_i = int(i * scale_factor)
                 out_j = int(j * scale_factor)
-                output_array[out_i:out_i+tile_out_h, out_j:out_j+tile_out_w] = tile_out_np
-        
-        # Desnormalize
-        valid_mask = img_norm > 0
-        if np.any(valid_mask):
-            original_min = np.min(img[valid_mask])
-            original_max = np.max(img[valid_mask])
-            output_array = output_array * (original_max - original_min) + original_min
-        
+                # Blend by summing and counting overlaps
+                output_array[out_i:out_i+tile_out_h, out_j:out_j+tile_out_w] += tile_out_np
+                weight_array[out_i:out_i+tile_out_h, out_j:out_j+tile_out_w] += 1
+
+        # Average overlapping regions
+        output_array = np.divide(output_array, weight_array, out=np.zeros_like(output_array), where=weight_array > 0)
+
+        # Denormalize
+        output_array = output_array * (p98 - p2 + 1e-8) + p2
+
         profile.update({
             'height': output_array.shape[0],
             'width': output_array.shape[1],
             'transform': src.transform * src.transform.scale(1/scale_factor, 1/scale_factor)
         })
-        
+
         with rasterio.open(output_path, 'w', **profile) as dst:
             dst.write(output_array.astype(profile['dtype']), 1)
-        
+
         print(f"✅ Super resolução gerada: {output_path}")
         print(f"   Resolução final: {target_resolution:.2f}m")
         print(f"   Dimensões: {output_array.shape}")
-
-
-
-
 
 
 
@@ -488,6 +491,6 @@ if __name__ == "__main__":
     generate_super_resolution(
         "model/adaptive_unet.pth",
         "D:\casptone\ANADEM_SampaUTM\ANADEM_SampaUTM.tif",
-        "output/ANADEM_SP_50ep_16f_10m.tif",
+        "output/ANADEM_SP_50ep_16f_10m_overlap20.tif",
         target_resolution=10
     )
