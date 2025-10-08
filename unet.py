@@ -22,17 +22,13 @@ print(f"Usando dispositivo: {device}")
 class AdaptiveSuperResTiffDataset(Dataset):
     """
     Dataset adaptativo que permite diferentes resoluções de saída
-    Agora com normalização opcional (min-max por patch/imagem).
     """
-    def __init__(self, low_res_files, high_res_files, target_resolution=None, transform=None,
-                 patch_size=128, normalize=True, norm_type='minmax'):
+    def __init__(self, low_res_files, high_res_files, target_resolution=None, transform=None, patch_size=128):
         self.low_res_datasets = [rasterio.open(f) for f in low_res_files]
         self.high_res_datasets = [rasterio.open(f) for f in high_res_files]
         self.transform = transform
         self.patch_size = patch_size
-        self.target_resolution = target_resolution  # Em metros
-        self.normalize = normalize
-        self.norm_type = norm_type
+        self.target_resolution = target_resolution  # Em metros (ex: 0.5, 5.0, 10.0)
         
         assert len(self.low_res_datasets) == len(self.high_res_datasets), \
             "Número de arquivos low-res e high-res deve ser igual"
@@ -53,8 +49,8 @@ class AdaptiveSuperResTiffDataset(Dataset):
             high_res_y = abs(high_src.transform.e)
             
             # Calcular fator de escala
-            scale_x = low_res_x / high_res_x if high_res_x != 0 else 1.0
-            scale_y = low_res_y / high_res_y if high_res_y != 0 else 1.0
+            scale_x = low_res_x / high_res_x
+            scale_y = low_res_y / high_res_y
             
             info = {
                 'low_res': (low_res_x, low_res_y),
@@ -94,7 +90,7 @@ class AdaptiveSuperResTiffDataset(Dataset):
         if max_x <= 0 or max_y <= 0:
             # Se muito pequena, usar imagem inteira
             window = Window(0, 0, min(low_src.width, high_src.width), 
-                            min(low_src.height, high_src.height))
+                          min(low_src.height, high_src.height))
         else:
             # Selecionar patch aleatório
             random_x = np.random.randint(0, max_x)
@@ -111,29 +107,13 @@ class AdaptiveSuperResTiffDataset(Dataset):
             img_low = low_src.read(1).astype(np.float32)
             img_high = high_src.read(1).astype(np.float32)
         
-        # Aplicar normalização condicional
-        if self.normalize:
-            if self.norm_type == 'minmax':
-                img_low_proc = self._minmax_normalize(img_low, low_src.nodata)
-                img_high_proc = self._minmax_normalize(img_high, high_src.nodata)
-            else:
-                # fallback para minmax se outro tipo não implementado
-                img_low_proc = self._minmax_normalize(img_low, low_src.nodata)
-                img_high_proc = self._minmax_normalize(img_high, high_src.nodata)
-        else:
-            # Sem normalização: apenas garantir float32 e substituir nodata por 0
-            if low_src.nodata is not None:
-                img_low_proc = np.where(img_low == low_src.nodata, 0.0, img_low).astype(np.float32)
-            else:
-                img_low_proc = img_low.astype(np.float32)
-            if high_src.nodata is not None:
-                img_high_proc = np.where(img_high == high_src.nodata, 0.0, img_high).astype(np.float32)
-            else:
-                img_high_proc = img_high.astype(np.float32)
+        # Normalização robusta
+        img_low_norm = self._normalize_image(img_low, low_src.nodata)
+        img_high_norm = self._normalize_image(img_high, high_src.nodata)
         
-        # Converter para tensores (C,H,W)
-        low_tensor = torch.from_numpy(img_low_proc).unsqueeze(0).float()
-        high_tensor = torch.from_numpy(img_high_proc).unsqueeze(0).float()
+        # Converter para tensores
+        low_tensor = torch.from_numpy(img_low_norm).unsqueeze(0)
+        high_tensor = torch.from_numpy(img_high_norm).unsqueeze(0)
         
         # Aplicar transformações se especificadas
         if self.transform:
@@ -145,33 +125,33 @@ class AdaptiveSuperResTiffDataset(Dataset):
         
         return low_tensor, high_tensor, resolution_factor
     
-    def _minmax_normalize(self, img, nodata_value=None):
-        """Normalização min-max por imagem/patch, com tratamento de nodata"""
+    def _normalize_image(self, img, nodata_value):
+        """Normaliza imagem de forma robusta"""
         if nodata_value is not None:
-            mask = img != nodata_value
+            valid_mask = img != nodata_value
         else:
-            mask = np.isfinite(img)
+            valid_mask = np.isfinite(img)
         
-        if not np.any(mask):
-            return np.zeros_like(img, dtype=np.float32)
+        if not np.any(valid_mask):
+            return np.zeros_like(img)
         
-        valid = img[mask].astype(np.float32)
-        mn = np.min(valid)
-        mx = np.max(valid)
-        if mx - mn <= 0:
-            return np.zeros_like(img, dtype=np.float32)
-        out = (img.astype(np.float32) - mn) / (mx - mn)
-        out[~mask] = 0.0
-        return out
+        valid_data = img[valid_mask]
+        
+        # Usar percentis para normalização mais robusta
+        p2, p98 = np.percentile(valid_data, [2, 98])
+        
+        if p98 - p2 > 0:
+            img_norm = np.zeros_like(img)
+            img_norm[valid_mask] = np.clip((img[valid_mask] - p2) / (p98 - p2), 0, 1)
+            return img_norm
+        else:
+            return np.zeros_like(img)
     
     def __del__(self):
         """Fechar todos os datasets ao destruir o objeto"""
         for dataset in self.low_res_datasets + self.high_res_datasets:
             if hasattr(dataset, 'close'):
-                try:
-                    dataset.close()
-                except Exception:
-                    pass
+                dataset.close()
 
 
 class ResolutionAwareUNet(nn.Module):
@@ -221,12 +201,11 @@ class ResolutionAwareUNet(nn.Module):
         self.final_conv = nn.Conv2d(f, out_channels, kernel_size=1)
         
         # Camada de refinamento para diferentes resoluções
-        # Usamos Sigmoid em vez de Tanh para facilitar interpretação [0,1]
         self.resolution_refine = nn.Sequential(
             nn.Conv2d(out_channels, f//2, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(f//2, out_channels, kernel_size=1),
-            nn.Sigmoid()  # Saída em [0,1]
+            nn.Tanh()  # Para manter valores na faixa [-1, 1]
         )
     
     def _conv_block(self, in_ch, out_ch):
@@ -283,21 +262,20 @@ class ResolutionAwareUNet(nn.Module):
         # Refinamento baseado na escala
         if target_scale is not None and target_scale != 1.0:
             refinement = self.resolution_refine(output)
-            # refinement em [0,1] -> centralizar em torno de 0: (refinement - 0.5)
-            output = output + 0.1 * (refinement - 0.5)
+            output = output + 0.1 * refinement  # Residual connection
         
         return output
     
     def _match_size_and_concat(self, upsampled, skip):
         """Ajusta tamanho e concatena skip connections"""
-        if upsampled.size()[2:] != skip.size()[2:]:
+        if upsampled.size() != skip.size():
             upsampled = F.interpolate(upsampled, size=skip.size()[2:], 
-                                      mode='bilinear', align_corners=False)
+                                    mode='bilinear', align_corners=False)
         return torch.cat([upsampled, skip], 1)
 
 
 class PerceptualLoss(nn.Module):
-    """Loss perceptual para melhor qualidade visual (mantive, mas podemos alternar)"""
+    """Loss perceptual para melhor qualidade visual"""
     def __init__(self):
         super().__init__()
         self.mse = nn.MSELoss()
@@ -330,12 +308,9 @@ class PerceptualLoss(nn.Module):
 
 def train_adaptive_unet(low_res_files, high_res_files, target_resolution=None, 
                        epochs=100, batch_size=4, learning_rate=1e-4, 
-                       patch_size=128, save_path="model/adaptive_unet.pth",
-                       normalize=True, use_simple_loss=False):
+                       patch_size=128, save_path="model/adaptive_unet.pth"):
     """
     Treina a U-Net adaptativa
-    normalize: se True, usa min-max por patch/imagem.
-    use_simple_loss: se True, usa L1Loss (mais simples para debug).
     """
     print(f"Iniciando treinamento para resolução alvo: {target_resolution}m")
     
@@ -343,8 +318,7 @@ def train_adaptive_unet(low_res_files, high_res_files, target_resolution=None,
     dataset = AdaptiveSuperResTiffDataset(
         low_res_files, high_res_files, 
         target_resolution=target_resolution,
-        patch_size=patch_size,
-        normalize=normalize
+        patch_size=patch_size
     )
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, 
                            num_workers=0, pin_memory=True if torch.cuda.is_available() else False)
@@ -353,10 +327,7 @@ def train_adaptive_unet(low_res_files, high_res_files, target_resolution=None,
     model = ResolutionAwareUNet(base_filters=16).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-    if use_simple_loss:
-        criterion = nn.L1Loss()
-    else:
-        criterion = PerceptualLoss()
+    criterion = PerceptualLoss()
     
     # Treinamento
     model.train()
@@ -371,48 +342,17 @@ def train_adaptive_unet(low_res_files, high_res_files, target_resolution=None,
             low_res = low_res.to(device)
             high_res = high_res.to(device)
             
-            # DEBUG: estatísticas de entrada
-            if batch_idx % 20 == 0:
-                try:
-                    print("INPUT min/max/mean/std:",
-                          float(low_res.min().cpu().item()), float(low_res.max().cpu().item()),
-                          float(low_res.mean().cpu().item()), float(low_res.std().cpu().item()))
-                    print("TARGET min/max/mean/std:",
-                          float(high_res.min().cpu().item()), float(high_res.max().cpu().item()),
-                          float(high_res.mean().cpu().item()), float(high_res.std().cpu().item()))
-                except Exception as e:
-                    print("Erro print estatísticas:", e)
-            
             optimizer.zero_grad()
             
             # Forward pass com informação de escala
             avg_resolution_factor = resolution_factors.mean().item()
             predictions = model(low_res, target_scale=avg_resolution_factor)
             
-            # DEBUG: estatísticas de saída
-            if batch_idx % 20 == 0:
-                try:
-                    print("PRED min/max/mean/std:",
-                          float(predictions.min().cpu().item()), float(predictions.max().cpu().item()),
-                          float(predictions.mean().cpu().item()), float(predictions.std().cpu().item()))
-                except Exception as e:
-                    print("Erro print pred:", e)
-            
             # Calcular loss
             loss = criterion(predictions, high_res)
             
             # Backward pass
             loss.backward()
-            # Grad-norm para debug
-            total_norm = 0.0
-            for p in model.parameters():
-                if p.grad is not None:
-                    param_norm = p.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-            total_norm = total_norm ** 0.5
-            if batch_idx % 20 == 0:
-                print("Grad norm:", total_norm, " Loss:", loss.item())
-            
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
@@ -440,7 +380,6 @@ def train_adaptive_unet(low_res_files, high_res_files, target_resolution=None,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': best_loss,
                 'target_resolution': target_resolution,
-                'normalize': normalize
             }, save_path)
             print(f"✅ Modelo salvo com loss: {best_loss:.6f}")
     
@@ -449,137 +388,106 @@ def train_adaptive_unet(low_res_files, high_res_files, target_resolution=None,
 
 
 def generate_super_resolution(model_path, input_raster_path, output_path, 
-                            target_resolution=None, device=None):
+                            target_resolution=None, device=None, tile_size=512):
     """
-    Gera super resolução de um raster usando modelo treinado.
-    Assume que, se o modelo foi treinado com normalize=True, então
-    normalizamos a imagem inteira por min-max antes da inferência e
-    depois desnormalizamos usando os mesmos min/max.
+    Gera super resolução de um raster usando modelo treinado, processando em tiles para evitar OOM.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Carregar modelo
     checkpoint = torch.load(model_path, map_location=device)
     model = ResolutionAwareUNet(base_filters=16).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
-    trained_normalize = checkpoint.get('normalize', True)
     print(f"Modelo carregado. Resolução de treinamento: {checkpoint.get('target_resolution', 'N/A')}m")
-    print(f"Modelo foi treinado com normalize={trained_normalize}")
     
-    # Processar raster
     with rasterio.open(input_raster_path) as src:
-        # Ler dados
         img = src.read(1).astype(np.float32)
         profile = src.profile.copy()
-        
-        # Obter resolução atual
         current_res_x = abs(src.transform.a)
         current_res_y = abs(src.transform.e)
         current_resolution = (current_res_x + current_res_y) / 2
         
-        print(f"Resolução atual: {current_resolution:.2f}m")
-        
-        # Calcular fator de escala se resolução alvo especificada
         if target_resolution:
             scale_factor = current_resolution / target_resolution
             print(f"Fator de escala para {target_resolution}m: {scale_factor:.2f}x")
         else:
-            scale_factor = 2.0  # Padrão: 2x
+            scale_factor = 2.0
             target_resolution = current_resolution / scale_factor
         
-        # Normalizar imagem inteira se modelo foi treinado com normalização
-        if trained_normalize:
-            mask = np.isfinite(img)
-            if np.any(mask):
-                mn = float(np.min(img[mask]))
-                mx = float(np.max(img[mask]))
-                if mx - mn <= 0:
-                    img_norm = np.zeros_like(img, dtype=np.float32)
-                else:
-                    img_norm = (img - mn) / (mx - mn)
-                    img_norm[~mask] = 0.0
-            else:
-                img_norm = np.zeros_like(img, dtype=np.float32)
-            denorm_min, denorm_max = mn, mx
-        else:
-            img_norm = img.copy()
-            denorm_min, denorm_max = None, None
+        dataset_dummy = AdaptiveSuperResTiffDataset([input_raster_path], [input_raster_path])
+        img_norm = dataset_dummy._normalize_image(img, src.nodata)
         
-        # Converter para tensor
-        img_tensor = torch.from_numpy(img_norm).unsqueeze(0).unsqueeze(0).to(device).float()
+        # Calculate output size
+        out_height = int(img.shape[0] * scale_factor)
+        out_width = int(img.shape[1] * scale_factor)
+        output_array = np.zeros((out_height, out_width), dtype=np.float32)
         
-        # Inferência
-        with torch.no_grad():
-            if scale_factor != 1.0:
-                # Redimensionar input se necessário
-                if scale_factor > 1:
-                    new_height = int(img.shape[0] * scale_factor)
-                    new_width = int(img.shape[1] * scale_factor)
-                    img_tensor = F.interpolate(img_tensor, size=(new_height, new_width), 
-                                             mode='bilinear', align_corners=False)
-            
-            # Aplicar modelo
-            output = model(img_tensor, target_scale=scale_factor)
-            output_array = output.cpu().numpy().squeeze()
+        # Process in tiles
+        step = tile_size
+        for i in range(0, img.shape[0], step):
+            for j in range(0, img.shape[1], step):
+                tile = img_norm[i:i+step, j:j+step]
+                tile_tensor = torch.from_numpy(tile).unsqueeze(0).unsqueeze(0).to(device)
+                # Upsample tile if needed
+                tile_out_h = int(tile.shape[0] * scale_factor)
+                tile_out_w = int(tile.shape[1] * scale_factor)
+                with torch.no_grad():
+                    tile_tensor_up = F.interpolate(tile_tensor, size=(tile_out_h, tile_out_w), mode='bilinear', align_corners=False)
+                    tile_out = model(tile_tensor_up, target_scale=scale_factor)
+                    tile_out_np = tile_out.cpu().numpy().squeeze()
+                # Place tile in output array
+                out_i = int(i * scale_factor)
+                out_j = int(j * scale_factor)
+                output_array[out_i:out_i+tile_out_h, out_j:out_j+tile_out_w] = tile_out_np
         
-        # Desnormalizar (se aplicável)
-        if trained_normalize and denorm_min is not None:
-            output_array = output_array * (denorm_max - denorm_min) + denorm_min
+        # Desnormalize
+        valid_mask = img_norm > 0
+        if np.any(valid_mask):
+            original_min = np.min(img[valid_mask])
+            original_max = np.max(img[valid_mask])
+            output_array = output_array * (original_max - original_min) + original_min
         
-        # Atualizar perfil para nova resolução
-        if scale_factor != 1.0:
-            profile.update({
-                'height': output_array.shape[0],
-                'width': output_array.shape[1],
-                'transform': src.transform * src.transform.scale(1/scale_factor, 1/scale_factor)
-            })
+        profile.update({
+            'height': output_array.shape[0],
+            'width': output_array.shape[1],
+            'transform': src.transform * src.transform.scale(1/scale_factor, 1/scale_factor)
+        })
         
-        # Garantir dtype float32 ao salvar
-        profile['dtype'] = 'float32'
-        # Se nodata estava definido, manter mas adaptar tipo
-        if 'nodata' in profile and profile['nodata'] is not None:
-            # manter, mas assegurar compatibilidade
-            try:
-                profile['nodata'] = float(profile['nodata'])
-            except Exception:
-                profile.pop('nodata', None)
-        
-        # DEBUG: estatísticas antes de escrever
-        print("OUTPUT array min/max:", np.nanmin(output_array), np.nanmax(output_array))
-        print("Profile dtype:", profile.get('dtype'))
-        
-        # Salvar resultado
         with rasterio.open(output_path, 'w', **profile) as dst:
-            dst.write(output_array.astype('float32'), 1)
+            dst.write(output_array.astype(profile['dtype']), 1)
         
         print(f"✅ Super resolução gerada: {output_path}")
-        print(f"   Resolução final (estimada): {target_resolution:.2f}m")
+        print(f"   Resolução final: {target_resolution:.2f}m")
         print(f"   Dimensões: {output_array.shape}")
+
+
+
+
+
 
 
 # Exemplo de uso
 if __name__ == "__main__":
     # Arquivos de exemplo - substitua pelos seus caminhos
-    low_res_files = ["dados/rec_geosampa_30m.tif"]
-    high_res_files = ["dados/rec_geosampa_10m.tif"]
+    # low_res_files = ["dados/geosampa_30m.tif"]
+    # high_res_files = ["dados/geosampa_10m.tif"]
     
-    # Treinar modelo para resolução específica
-    target_resolution = 10  
-    model = train_adaptive_unet(
-        low_res_files, high_res_files, 
-        target_resolution=target_resolution,
-        epochs=20,             
-        batch_size=2,
-        patch_size=128
-    )
+    # # Treinar modelo para resolução específica
+    # target_resolution = 10  
+    # model = train_adaptive_unet(
+    #     low_res_files, high_res_files, 
+    #     target_resolution=target_resolution,
+    #     epochs=50,             
+    #     batch_size=2,
+    #     patch_size=128
+    # )
     
     # Gerar super resolução
     generate_super_resolution(
-        "adaptive_unet_normalized.pth",
-        "dados/ANADEM_AricanduvaBufferUTM.tif",
-        "output/ANADEM_Aricanduva_20ep_16f_10m_normalized.tif",
+        "model/adaptive_unet.pth",
+        "D:\casptone\ANADEM_SampaUTM\ANADEM_SampaUTM.tif",
+        "output/ANADEM_SP_50ep_16f_10m.tif",
         target_resolution=10
     )
