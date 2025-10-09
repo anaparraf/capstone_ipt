@@ -474,23 +474,25 @@ def generate_super_resolution(
 # Exemplo de uso
 if __name__ == "__main__":
     # Arquivos de exemplo - substitua pelos seus caminhos
-    # low_res_files = ["dados/geosampa_30m.tif"]
-    # high_res_files = ["dados/geosampa_10m.tif"]
+    low_res_files = ["dados/geosampa_30m.tif"]
+    high_res_files = ["dados/geosampa_10m.tif"]
     
-    # # Treinar modelo para resolução específica
-    # target_resolution = 10  
-    # model = train_adaptive_unet(
-    #     low_res_files, high_res_files, 
-    #     target_resolution=target_resolution,
-    #     epochs=50,             
-    #     batch_size=2,
-    #     patch_size=128
-    # )
+    # Treinar modelo para resolução específica
+    target_resolution = 10  
+    model = train_adaptive_unet(
+        low_res_files, high_res_files, 
+        target_resolution=target_resolution,
+        epochs=100,             
+        batch_size=2,
+        patch_size=128
+    )
     
     # Gerar super resolução
     generate_super_resolution(
         "model/adaptive_unet.pth",
         "D:\casptone\ANADEM_SampaUTM\ANADEM_SampaUTM.tif",
-        "output/ANADEM_SP_50ep_16f_10m_overlap20.tif",
-        target_resolution=10
+        "output/ANADEM_SP_100ep_16f_10m.tif",
+        target_resolution=10,
+        # tile_size=128,
+        overlap=0.1
     )
