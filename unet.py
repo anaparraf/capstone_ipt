@@ -313,6 +313,7 @@ def train_adaptive_unet(low_res_files, high_res_files, target_resolution=None,
     Treina a U-Net adaptativa
     """
     print(f"Iniciando treinamento para resolução alvo: {target_resolution}m")
+    start_time = time.time()
     
     # Dataset e DataLoader
     dataset = AdaptiveSuperResTiffDataset(
@@ -384,6 +385,8 @@ def train_adaptive_unet(low_res_files, high_res_files, target_resolution=None,
             print(f"✅ Modelo salvo com loss: {best_loss:.6f}")
     
     print("Treinamento concluído!")
+    elapsed = time.time() - start_time
+    print(f"Tempo total de treinamento: {elapsed/60:.2f} minutos")
     return model
 
 
@@ -470,29 +473,150 @@ def generate_super_resolution(
         print(f"   Dimensões: {output_array.shape}")
 
 
+# def generate_super_resolution(model_path, input_raster_path, output_path, 
+#                             target_resolution=None, device=None):
+#     """
+#     Gera super resolução de um raster usando modelo treinado.
+#     Assume que, se o modelo foi treinado com normalize=True, então
+#     normalizamos a imagem inteira por min-max antes da inferência e
+#     depois desnormalizamos usando os mesmos min/max.
+#     """
+#     if device is None:
+#         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+#     # Carregar modelo
+#     checkpoint = torch.load(model_path, map_location=device)
+#     model = ResolutionAwareUNet(base_filters=16).to(device)
+#     model.load_state_dict(checkpoint['model_state_dict'])
+#     model.eval()
+    
+#     trained_normalize = checkpoint.get('normalize', True)
+#     print(f"Modelo carregado. Resolução de treinamento: {checkpoint.get('target_resolution', 'N/A')}m")
+#     print(f"Modelo foi treinado com normalize={trained_normalize}")
+    
+#     # Processar raster
+#     with rasterio.open(input_raster_path) as src:
+#         # Ler dados
+#         img = src.read(1).astype(np.float32)
+#         profile = src.profile.copy()
+        
+#         # Obter resolução atual
+#         current_res_x = abs(src.transform.a)
+#         current_res_y = abs(src.transform.e)
+#         current_resolution = (current_res_x + current_res_y) / 2
+        
+#         print(f"Resolução atual: {current_resolution:.2f}m")
+        
+#         # Calcular fator de escala se resolução alvo especificada
+#         if target_resolution:
+#             scale_factor = current_resolution / target_resolution
+#             print(f"Fator de escala para {target_resolution}m: {scale_factor:.2f}x")
+#         else:
+#             scale_factor = 2.0  # Padrão: 2x
+#             target_resolution = current_resolution / scale_factor
+        
+#         # Normalizar imagem inteira se modelo foi treinado com normalização
+#         if trained_normalize:
+#             mask = np.isfinite(img)
+#             if np.any(mask):
+#                 mn = float(np.min(img[mask]))
+#                 mx = float(np.max(img[mask]))
+#                 if mx - mn <= 0:
+#                     img_norm = np.zeros_like(img, dtype=np.float32)
+#                 else:
+#                     img_norm = (img - mn) / (mx - mn)
+#                     img_norm[~mask] = 0.0
+#             else:
+#                 img_norm = np.zeros_like(img, dtype=np.float32)
+#             denorm_min, denorm_max = mn, mx
+#         else:
+#             img_norm = img.copy()
+#             denorm_min, denorm_max = None, None
+        
+#         # Converter para tensor
+#         img_tensor = torch.from_numpy(img_norm).unsqueeze(0).unsqueeze(0).to(device).float()
+        
+#         # Inferência
+#         with torch.no_grad():
+#             if scale_factor != 1.0:
+#                 # Redimensionar input se necessário
+#                 if scale_factor > 1:
+#                     new_height = int(img.shape[0] * scale_factor)
+#                     new_width = int(img.shape[1] * scale_factor)
+#                     img_tensor = F.interpolate(img_tensor, size=(new_height, new_width), 
+#                                              mode='bilinear', align_corners=False)
+            
+#             # Aplicar modelo
+#             output = model(img_tensor, target_scale=scale_factor)
+#             output_array = output.cpu().numpy().squeeze()
+        
+#         # Desnormalizar (se aplicável)
+#         if trained_normalize and denorm_min is not None:
+#             output_array = output_array * (denorm_max - denorm_min) + denorm_min
+        
+#         # Atualizar perfil para nova resolução
+#         if scale_factor != 1.0:
+#             profile.update({
+#                 'height': output_array.shape[0],
+#                 'width': output_array.shape[1],
+#                 'transform': src.transform * src.transform.scale(1/scale_factor, 1/scale_factor)
+#             })
+        
+#         # Garantir dtype float32 ao salvar
+#         profile['dtype'] = 'float32'
+#         # Se nodata estava definido, manter mas adaptar tipo
+#         if 'nodata' in profile and profile['nodata'] is not None:
+#             # manter, mas assegurar compatibilidade
+#             try:
+#                 profile['nodata'] = float(profile['nodata'])
+#             except Exception:
+#                 profile.pop('nodata', None)
+        
+#         # DEBUG: estatísticas antes de escrever
+#         print("OUTPUT array min/max:", np.nanmin(output_array), np.nanmax(output_array))
+#         print("Profile dtype:", profile.get('dtype'))
+        
+#         # Salvar resultado
+#         with rasterio.open(output_path, 'w', **profile) as dst:
+#             dst.write(output_array.astype('float32'), 1)
+        
+#         print(f"✅ Super resolução gerada: {output_path}")
+#         print(f"   Resolução final (estimada): {target_resolution:.2f}m")
+#         print(f"   Dimensões: {output_array.shape}")
+
 
 # Exemplo de uso
 if __name__ == "__main__":
     # Arquivos de exemplo - substitua pelos seus caminhos
     low_res_files = ["dados/geosampa_30m.tif"]
-    high_res_files = ["dados/geosampa_10m.tif"]
+    high_res_files = ["dados/geosampa_5m.tif"]
     
-    # Treinar modelo para resolução específica
-    target_resolution = 10  
-    model = train_adaptive_unet(
-        low_res_files, high_res_files, 
-        target_resolution=target_resolution,
-        epochs=100,             
-        batch_size=2,
-        patch_size=128
-    )
+    # # Treinar modelo para resolução específica
+    # target_resolution = 5  
+    # model = train_adaptive_unet(
+    #     low_res_files, high_res_files, 
+    #     target_resolution=target_resolution,
+    #     epochs=200,             
+    #     batch_size=2,
+    #     patch_size=128,
+    #     save_path="model/adaptive_unet_5m.pth"
+    # )
     
     # Gerar super resolução
     generate_super_resolution(
-        "model/adaptive_unet.pth",
-        "D:\casptone\ANADEM_SampaUTM\ANADEM_SampaUTM.tif",
-        "output/ANADEM_SP_100ep_16f_10m.tif",
-        target_resolution=10,
+        "model/adaptive_unet_5m.pth",
+        "dados/ANADEM_Recorte_IPT.tif",
+        "output/ANADEM_Recorte_IPT_200ep_16f_5m_v3.tif",
+        target_resolution=5,
         # tile_size=128,
-        overlap=0.1
+        overlap=0.4
     )
+
+
+    #     # Gerar super resolução
+    # generate_super_resolution(
+    #     "model/adaptive_unet_5m.pth",
+    #     "dados/ANADEM_Recorte_IPT.tif",
+    #     "output/ANADEM_Recorte_IPT_200ep_16f_5m_v2.tif",
+    #     target_resolution=5
+    # )
