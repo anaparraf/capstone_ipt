@@ -1,114 +1,414 @@
 RELATÓRIO DE BENCHMARK - SUPER RESOLUÇÃO
 ==================================================
 
-Modelo avaliado: adaptive_unet.pth
-Data: 2025-09-29 23:05:37
+Modelo avaliado: model/adaptive_unet_5m_v2.pth
+Data: 2025-10-16 09:34:42
 
 
 RESOLUÇÃO ALVO: 0.5m
 ------------------------------
 Nenhum resultado válido para esta resolução.
 
-RESOLUÇÃO ALVO: 2.5m
+RESOLUÇÃO ALVO: 1m
 ------------------------------
 Nenhum resultado válido para esta resolução.
+
+RESOLUÇÃO ALVO: 1.5m
+------------------------------
+PSNR:
+  Média: 9.165762
+  Desvio: 0.000000
+  Min: 9.165762
+  Max: 9.165762
+SSIM:
+  Média: 0.000000
+  Desvio: 0.000000
+  Min: 0.000000
+  Max: 0.000000
+MSE:
+  Média: 311.709187
+  Desvio: 0.000000
+  Min: 311.709187
+  Max: 311.709187
+Correlation:
+  Média: 0.388705
+  Desvio: 0.000000
+  Min: 0.388705
+  Max: 0.388705
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 2m
+------------------------------
+PSNR:
+  Média: 11.715382
+  Desvio: 0.000000
+  Min: 11.715382
+  Max: 11.715382
+SSIM:
+  Média: 0.266727
+  Desvio: 0.000000
+  Min: 0.266727
+  Max: 0.266727
+MSE:
+  Média: 142.686459
+  Desvio: 0.000000
+  Min: 142.686459
+  Max: 142.686459
+Correlation:
+  Média: 0.515910
+  Desvio: 0.000000
+  Min: 0.515910
+  Max: 0.515910
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 2.5m
+------------------------------
+PSNR:
+  Média: 8.780863
+  Desvio: 0.000000
+  Min: 8.780863
+  Max: 8.780863
+SSIM:
+  Média: 0.022042
+  Desvio: 0.000000
+  Min: 0.022042
+  Max: 0.022042
+MSE:
+  Média: 217.456088
+  Desvio: 0.000000
+  Min: 217.456088
+  Max: 217.456088
+Correlation:
+  Média: 0.083578
+  Desvio: 0.000000
+  Min: 0.083578
+  Max: 0.083578
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 3m
+------------------------------
+PSNR:
+  Média: 6.983235
+  Desvio: 0.000000
+  Min: 6.983235
+  Max: 6.983235
+SSIM:
+  Média: -0.061711
+  Desvio: 0.000000
+  Min: -0.061711
+  Max: -0.061711
+MSE:
+  Média: 271.163394
+  Desvio: 0.000000
+  Min: 271.163394
+  Max: 271.163394
+Correlation:
+  Média: -0.371879
+  Desvio: 0.000000
+  Min: -0.371879
+  Max: -0.371879
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 4m
+------------------------------
+PSNR:
+  Média: 7.090696
+  Desvio: 0.000000
+  Min: 7.090696
+  Max: 7.090696
+SSIM:
+  Média: -0.023989
+  Desvio: 0.000000
+  Min: -0.023989
+  Max: -0.023989
+MSE:
+  Média: 239.053896
+  Desvio: 0.000000
+  Min: 239.053896
+  Max: 239.053896
+Correlation:
+  Média: -0.334184
+  Desvio: 0.000000
+  Min: -0.334184
+  Max: -0.334184
+
+Número de arquivos processados: 1
 
 RESOLUÇÃO ALVO: 5m
 ------------------------------
 PSNR:
-  Média: 9.279317
+  Média: 7.304566
   Desvio: 0.000000
-  Min: 9.279317
-  Max: 9.279317
+  Min: 7.304566
+  Max: 7.304566
 SSIM:
-  Média: 0.037784
+  Média: 0.030914
   Desvio: 0.000000
-  Min: 0.037784
-  Max: 0.037784
+  Min: 0.030914
+  Max: 0.030914
 MSE:
-  Média: 1397.885255
+  Média: 233.923568
   Desvio: 0.000000
-  Min: 1397.885255
-  Max: 1397.885255
+  Min: 233.923568
+  Max: 233.923568
 Correlation:
-  Média: 0.027447
+  Média: -0.249255
   Desvio: 0.000000
-  Min: 0.027447
-  Max: 0.027447
+  Min: -0.249255
+  Max: -0.249255
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 6m
+------------------------------
+PSNR:
+  Média: 6.730655
+  Desvio: 0.000000
+  Min: 6.730655
+  Max: 6.730655
+SSIM:
+  Média: 0.006564
+  Desvio: 0.000000
+  Min: 0.006564
+  Max: 0.006564
+MSE:
+  Média: 259.846865
+  Desvio: 0.000000
+  Min: 259.846865
+  Max: 259.846865
+Correlation:
+  Média: -0.323431
+  Desvio: 0.000000
+  Min: -0.323431
+  Max: -0.323431
 
 Número de arquivos processados: 1
 
 RESOLUÇÃO ALVO: 7m
 ------------------------------
 PSNR:
-  Média: 10.525509
+  Média: 6.195886
   Desvio: 0.000000
-  Min: 10.525509
-  Max: 10.525509
+  Min: 6.195886
+  Max: 6.195886
 SSIM:
-  Média: 0.097722
+  Média: -0.049707
   Desvio: 0.000000
-  Min: 0.097722
-  Max: 0.097722
+  Min: -0.049707
+  Max: -0.049707
 MSE:
-  Média: 1365.405421
+  Média: 295.647999
   Desvio: 0.000000
-  Min: 1365.405421
-  Max: 1365.405421
+  Min: 295.647999
+  Max: 295.647999
 Correlation:
-  Média: 0.197979
+  Média: -0.452888
   Desvio: 0.000000
-  Min: 0.197979
-  Max: 0.197979
+  Min: -0.452888
+  Max: -0.452888
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 8m
+------------------------------
+PSNR:
+  Média: 6.172955
+  Desvio: 0.000000
+  Min: 6.172955
+  Max: 6.172955
+SSIM:
+  Média: -0.037578
+  Desvio: 0.000000
+  Min: -0.037578
+  Max: -0.037578
+MSE:
+  Média: 339.503486
+  Desvio: 0.000000
+  Min: 339.503486
+  Max: 339.503486
+Correlation:
+  Média: -0.517868
+  Desvio: 0.000000
+  Min: -0.517868
+  Max: -0.517868
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 9m
+------------------------------
+PSNR:
+  Média: 6.304758
+  Desvio: 0.000000
+  Min: 6.304758
+  Max: 6.304758
+SSIM:
+  Média: -0.010586
+  Desvio: 0.000000
+  Min: -0.010586
+  Max: -0.010586
+MSE:
+  Média: 348.767175
+  Desvio: 0.000000
+  Min: 348.767175
+  Max: 348.767175
+Correlation:
+  Média: -0.431724
+  Desvio: 0.000000
+  Min: -0.431724
+  Max: -0.431724
 
 Número de arquivos processados: 1
 
 RESOLUÇÃO ALVO: 10m
 ------------------------------
 PSNR:
-  Média: 11.177128
+  Média: 6.679872
   Desvio: 0.000000
-  Min: 11.177128
-  Max: 11.177128
+  Min: 6.679872
+  Max: 6.679872
 SSIM:
-  Média: 0.198693
+  Média: 0.025734
   Desvio: 0.000000
-  Min: 0.198693
-  Max: 0.198693
+  Min: 0.025734
+  Max: 0.025734
 MSE:
-  Média: 1593.845020
+  Média: 342.120420
   Desvio: 0.000000
-  Min: 1593.845020
-  Max: 1593.845020
+  Min: 342.120420
+  Max: 342.120420
 Correlation:
-  Média: 0.217283
+  Média: -0.313051
   Desvio: 0.000000
-  Min: 0.217283
-  Max: 0.217283
+  Min: -0.313051
+  Max: -0.313051
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 11m
+------------------------------
+PSNR:
+  Média: 7.265603
+  Desvio: 0.000000
+  Min: 7.265603
+  Max: 7.265603
+SSIM:
+  Média: 0.063413
+  Desvio: 0.000000
+  Min: 0.063413
+  Max: 0.063413
+MSE:
+  Média: 317.102985
+  Desvio: 0.000000
+  Min: 317.102985
+  Max: 317.102985
+Correlation:
+  Média: -0.169907
+  Desvio: 0.000000
+  Min: -0.169907
+  Max: -0.169907
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 12m
+------------------------------
+PSNR:
+  Média: 7.583010
+  Desvio: 0.000000
+  Min: 7.583010
+  Max: 7.583010
+SSIM:
+  Média: 0.069289
+  Desvio: 0.000000
+  Min: 0.069289
+  Max: 0.069289
+MSE:
+  Média: 301.824627
+  Desvio: 0.000000
+  Min: 301.824627
+  Max: 301.824627
+Correlation:
+  Média: -0.090279
+  Desvio: 0.000000
+  Min: -0.090279
+  Max: -0.090279
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 13m
+------------------------------
+PSNR:
+  Média: 7.405941
+  Desvio: 0.000000
+  Min: 7.405941
+  Max: 7.405941
+SSIM:
+  Média: 0.044081
+  Desvio: 0.000000
+  Min: 0.044081
+  Max: 0.044081
+MSE:
+  Média: 323.056892
+  Desvio: 0.000000
+  Min: 323.056892
+  Max: 323.056892
+Correlation:
+  Média: -0.152426
+  Desvio: 0.000000
+  Min: -0.152426
+  Max: -0.152426
+
+Número de arquivos processados: 1
+
+RESOLUÇÃO ALVO: 14m
+------------------------------
+PSNR:
+  Média: 6.953189
+  Desvio: 0.000000
+  Min: 6.953189
+  Max: 6.953189
+SSIM:
+  Média: 0.034999
+  Desvio: 0.000000
+  Min: 0.034999
+  Max: 0.034999
+MSE:
+  Média: 356.007641
+  Desvio: 0.000000
+  Min: 356.007641
+  Max: 356.007641
+Correlation:
+  Média: -0.248370
+  Desvio: 0.000000
+  Min: -0.248370
+  Max: -0.248370
 
 Número de arquivos processados: 1
 
 RESOLUÇÃO ALVO: 15m
 ------------------------------
 PSNR:
-  Média: 9.076666
+  Média: 6.676309
   Desvio: 0.000000
-  Min: 9.076666
-  Max: 9.076666
+  Min: 6.676309
+  Max: 6.676309
 SSIM:
-  Média: 0.197564
+  Média: 0.011835
   Desvio: 0.000000
-  Min: 0.197564
-  Max: 0.197564
+  Min: 0.011835
+  Max: 0.011835
 MSE:
-  Média: 5063.404754
+  Média: 399.703903
   Desvio: 0.000000
-  Min: 5063.404754
-  Max: 5063.404754
+  Min: 399.703903
+  Max: 399.703903
 Correlation:
-  Média: 0.039235
+  Média: -0.331171
   Desvio: 0.000000
-  Min: 0.039235
-  Max: 0.039235
+  Min: -0.331171
+  Max: -0.331171
 
 Número de arquivos processados: 1

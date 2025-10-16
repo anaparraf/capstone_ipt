@@ -7,9 +7,11 @@ import torch
 import torch.nn.functional as F
 import os
 import time
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Importar as classes do arquivo principal
-from unet import ResolutionAwareUNet, generate_super_resolution
+from unet3 import ResolutionAwareUNet, generate_super_resolution
 
 def evaluate_super_resolution(reference_path, predicted_path, nodata_value=None):
     """
@@ -397,10 +399,10 @@ def example_evaluation():
     Exemplo de como usar as funções de avaliação
     """
     # Caminhos dos arquivos (substitua pelos seus)
-    model_path = "adaptive_unet.pth"
-    test_files = ["dados/ANADEM_AricanduvaBufferUTM.tif"]  # Arquivos de baixa resolução para teste
+    model_path = "model/adaptive_unet_5m_v2.pth"
+    test_files = ["dados/ANADEM_Recorte_IPT.tif"]  # Arquivos de baixa resolução para teste
     # target_resolutions = [0.5, 1.0, 2.0, 5.0]  # Resoluções alvo em metros
-    target_resolutions = [0.5, 2.5, 5, 7, 10, 15] 
+    target_resolutions = [0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6,  7, 8, 9, 10, 11, 12, 13, 14, 15] 
     # Executar benchmark
     benchmark = SuperResolutionBenchmark(model_path)
     results = benchmark.run_benchmark(test_files, target_resolutions)
@@ -410,9 +412,9 @@ def example_evaluation():
     
     # Visualização específica (se você tiver arquivos de referência)
     # visualize_comparison(
-    #     "dados/referencia_alta_res.tif",
+    #     "dados/GEOSAMPA_Recorte_IPT.tif",
     #     "evaluation_results/test_0_res_0.5m.tif",
-    #     "dados/rec_anadem.tif",
+    #     "dados/ANADEM_Recorte_IPT.tif",
     #     save_path="comparison_plot.png"
     # )
 
