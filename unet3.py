@@ -133,7 +133,8 @@ class AdaptiveSuperResTiffDataset(Dataset):
             valid_mask = np.isfinite(img)
         
         if not np.any(valid_mask):
-            return np.zeros_like(img)
+            # Retorna array de zeros do mesmo shape
+            return np.zeros_like(img, dtype=np.float32)
         
         valid_data = img[valid_mask]
         
@@ -149,7 +150,10 @@ class AdaptiveSuperResTiffDataset(Dataset):
                 noise = np.random.normal(0, 0.02, img_norm.shape).astype(np.float32)
                 img_norm = np.clip(img_norm + noise, 0, 1)
             
-            # Augmentation: aj
+            return img_norm
+        else:
+            # Se não há variação, retorna zeros
+            return np.zeros_like(img, dtype=np.float32)
     
     def __del__(self):
         for dataset in self.low_res_datasets + self.high_res_datasets:
@@ -655,22 +659,21 @@ if __name__ == "__main__":
     high_res_files = ["dados/geosampa_5m.tif"]
     
     # Treinar modelo
-    # model = train_adaptive_unet(
-    #     low_res_files, high_res_files, 
-    #     target_resolution=5,
-    #     epochs=20,             
-    #     batch_size=2,
-    #     patch_size=128,
-    #     save_path="model/adaptive_unet_5m_v2.pth"
-    # )
+    model = train_adaptive_unet(
+        low_res_files, high_res_files, 
+        target_resolution=5,
+        epochs=80,             
+        batch_size=2,
+        patch_size=128,
+        save_path="model/adaptive_unet_5m_v2.pth"
+    )
     
     # Gerar super resolução
     generate_super_resolution(
         "model/adaptive_unet_5m_v2.pth",
         "dados/ANADEM_Recorte_IPT.tif",
-        "output/ANADEM_v2_improved.tif",
+        "output/ANADEM_Recorte_IPT_80ep_improved.tif",
         target_resolution=5,
         tile_size=256,
         overlap=0.5
     )
-
