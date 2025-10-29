@@ -504,16 +504,16 @@ class ResolutionAwareUNet(nn.Module):
         u1 = self._match_size_and_concat(u1, c1)
         u1 = self.conv_up1(u1)
         
-        u_upsampled = self.subpixel_conv(u1)
+        # u_upsampled = self.subpixel_conv(u1)
         
-        if target_scale is not None:
-            target_h = int(h * target_scale)
-            target_w = int(w * target_scale)
-            u_upsampled = F.interpolate(u_upsampled, size=(target_h, target_w),
-                                       mode='bilinear', align_corners=False)
+        # if target_scale is not None:
+        #     target_h = int(h * target_scale)
+        #     target_w = int(w * target_scale)
+        #     u_upsampled = F.interpolate(u_upsampled, size=(target_h, target_w),
+        #                                mode='bilinear', align_corners=False)
         
-        output = self.final_refine(u_upsampled)
-        
+        # output = self.final_refine(u_upsampled)
+        output = self.final_refine(u1)
         return output
     
     def _match_size_and_concat(self, upsampled, skip):
@@ -888,7 +888,7 @@ def generate_super_resolution(
 
 
 if __name__ == "__main__":
-    low_res_files = ["dados/geosampa_30m.tif"]
+    low_res_files = ["dados/anadem_5m.tif"]
     high_res_files = ["dados/geosampa_5m.tif"]
     
     print("="*60)
@@ -898,10 +898,10 @@ if __name__ == "__main__":
     model, log_file = train_adaptive_unet(
         low_res_files, high_res_files, 
         target_resolution=5,
-        epochs=30,             
+        epochs=20,             
         batch_size=2,
-        patch_size=128,
-        save_path="model/adaptive_unet_5m_v3.pth"
+        patch_size=32, #90/5m
+        save_path="model/adaptive_unet_5m_samesize.pth"
     )
     
     print("="*60)
@@ -917,10 +917,10 @@ if __name__ == "__main__":
     print("="*60 + "\n")
     
     generate_super_resolution(
-        "model/adaptive_unet_5m_v3.pth",
+        "model/adaptive_unet_5m_samesize.pth",
         "dados/ANADEM_Recorte_IPT.tif",
-        "output/ANADEM_Recorte_IPT_30ep_improved.tif",
+        "output/ANADEM_Recorte_teste_20_samesize_32patch.tif",
         target_resolution=5,
         tile_size=256,
-        overlap=0.5
+        overlap=0.1
     )
