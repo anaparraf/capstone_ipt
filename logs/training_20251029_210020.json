@@ -1,0 +1,49 @@
+{
+  "timestamp": "20251029_210020",
+  "config": {
+    "epochs": 30,
+    "batch_size": 2,
+    "patch_size": 128,
+    "base_filters": 32,
+    "depth": 4,
+    "lr": 0.0001,
+    "weight_decay": 1e-06,
+    "use_ssim": false,
+    "norm_type": "group",
+    "dropout": 0.03
+  },
+  "epochs": [],
+  "batches": [
+    {
+      "epoch": 1,
+      "batch": 0,
+      "loss": 1.2275129556655884,
+      "lr": 0.0001
+    },
+    {
+      "epoch": 1,
+      "batch": 50,
+      "loss": 0.22687360644340515,
+      "lr": 0.0001
+    },
+    {
+      "epoch": 1,
+      "batch": 100,
+      "loss": 0.10313825309276581,
+      "lr": 0.0001
+    },
+    {
+      "epoch": 1,
+      "batch": 150,
+      "loss": 0.103963702917099,
+      "lr": 0.0001
+    }
+  ],
+  "metrics": {
+    "train_loss": [],
+    "val_loss": [],
+    "train_psnr": [],
+    "val_psnr": [],
+    "learning_rate": []
+  }
+}
