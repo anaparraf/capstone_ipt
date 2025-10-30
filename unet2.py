@@ -761,7 +761,7 @@ if __name__ == "__main__":
     
     # Treino
     train_anadem_files = ["dados/anadem_5m.tif"]       # ANADEM reamostrado para 5m
-    train_lidar_files = ["dados/geosampa_30m_reamostrado_5m.tif"]      # Usando GEOSAMPA como "LIDAR"
+    train_lidar_files = ["dados/geosampa_5m_reprojetado.tif"]      # Usando GEOSAMPA como "LIDAR"
     train_target_files = ["dados/MDTGeosampa_AricanduvaBufferUTM.tif"]     # Ground truth em 5m
     
     # Validação (região diferente)
@@ -796,9 +796,9 @@ if __name__ == "__main__":
         val_anadem=val_anadem_files,
         val_lidar=val_lidar_files,
         val_target=val_target_files,
-        epochs=90,           # Ajuste conforme necessário
+        epochs=50,           # Ajuste conforme necessário
         batch_size=4,        # Ajuste conforme sua VRAM (4-8 é seguro)
-        patch_size=64,      # 128 ou 256
+        patch_size=128,      # 128 ou 256
         lr=1e-4,             # Learning rate inicial
         save_path="model/unet_dual_input_best.pth"
     )
@@ -820,14 +820,13 @@ if __name__ == "__main__":
             model_path=model_path,
             anadem_path="dados/ANADEM_Recorte_IPT_5m.tif",
             lidar_path="dados/GEOSAMPA_Recorte_IPT_reamostrado_5m.tif",
-            output_path="output/resultado_unet_dual_input.tif",
+            output_path="output/resultado_unet_dual_input_50.tif",
             tile_size=256,
             overlap=0.5  # 50% overlap para blending suave
         )
         print("\n✓ Pipeline completo finalizado!")
         print(f"  - Modelo: {model_path}")
         print(f"  - Logs: {log_file}")
-        print(f"  - Output: output/resultado_unet_dual_input_90.tif")
     else:
         print(f"[ERRO] Modelo não encontrado: {model_path}")
         print("Execute o treinamento primeiro.")

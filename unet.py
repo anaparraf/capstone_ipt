@@ -641,9 +641,9 @@ def generate_same_res(model_ckpt_path, input_raster, output_raster, tile_size=25
 if __name__ == "__main__":
     # ajuste caminhos para seus dados
     train_low_files = ["dados/anadem_5m.tif"]   # exemplo
-    train_high_files = ["dados/geosampa_5m.tif"]
+    train_high_files = ["dados/geosampa_5m_reprojetado.tif"]
     val_low_files = ["dados/ANADEM_Recorte_IPT_5m.tif"]       # validação - região diferente
-    val_high_files = ["dados/GEOSAMPA_Recorte_IPT.tif"]
+    val_high_files = ["dados/GEOSAMPA_Recorte_IPT_reamostrado_5m.tif"]
 
 
     os.makedirs("model", exist_ok=True)
@@ -652,7 +652,7 @@ if __name__ == "__main__":
     model, log_file, best_ckpt = train_and_validate(
         train_low_files, train_high_files,
         val_low_files, val_high_files,
-        epochs=30,
+        epochs=80,
         batch_size=2,
         patch_size=128,
         base_filters=32,
@@ -679,6 +679,11 @@ if __name__ == "__main__":
     else:
         ckpt_path = None
     if ckpt_path and os.path.exists(ckpt_path):
-        generate_same_res(ckpt_path, "dados/ANADEM_Recorte_IPT_5m.tif", "output/ANADEM_Recorte_IPT_5m_improved_unet.tif", tile_size=256, overlap=0.5)
+        generate_same_res(
+            ckpt_path, 
+            "dados/ANADEM_Recorte_IPT_5m.tif", 
+            "output/ANADEM_Recorte_IPT_5m_improved_unet_20ep.tif", 
+            tile_size=256, 
+            overlap=0.5)
     else:
         print("Nenhum checkpoint encontrado para inferência. Rode treino primeiro ou ajuste caminho.")
