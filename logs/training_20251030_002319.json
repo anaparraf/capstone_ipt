@@ -1,0 +1,36 @@
+{
+  "timestamp": "20251030_002319",
+  "config": {
+    "epochs": 40,
+    "batch_size": 4,
+    "patch_size": 128,
+    "base_filters": 32,
+    "depth": 4,
+    "lr": 0.0001,
+    "weight_decay": 1e-06,
+    "norm_type": "group",
+    "dropout": 0.02,
+    "global_norm_stats": {
+      "low_p2": 732.6259155273438,
+      "low_p98": 900.2620239257812,
+      "high_p2": 730.3198852539062,
+      "high_p98": 895.4007568359375
+    }
+  },
+  "epochs": [],
+  "batches": [
+    {
+      "epoch": 1,
+      "batch": 0,
+      "loss": 1.7837716341018677,
+      "lr": 0.0001
+    }
+  ],
+  "metrics": {
+    "train_loss": [],
+    "val_loss": [],
+    "train_psnr": [],
+    "val_psnr": [],
+    "learning_rate": []
+  }
+}
