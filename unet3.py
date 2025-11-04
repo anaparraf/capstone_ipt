@@ -1070,7 +1070,7 @@ def generate_refined_dem_robust(
 if __name__ == "__main__":
     # Arquivos de entrada (MESMA RESOLUÇÃO)
     low_quality_files = ["dados/anadem_5m.tif"]     # Baixa qualidade
-    high_quality_files = ["dados/geosampa_5m.tif"]  # Alta qualidade (ground truth)
+    high_quality_files = ["dados/geosampa_5m_reprojetado.tif"]  # Alta qualidade (ground truth)
     
     print("="*60)
     print("TREINAMENTO U-NET - REFINAMENTO DE DEM")
@@ -1079,7 +1079,7 @@ if __name__ == "__main__":
     # Treinamento
     model, log_file = train_unet_refinement(
         low_quality_files, high_quality_files, 
-        epochs=4,
+        epochs= 20,
         batch_size=4,
         learning_rate=1e-4,
         patch_size=128,
@@ -1103,7 +1103,7 @@ if __name__ == "__main__":
     generate_refined_dem(
         "model/unet_refinement_5m.pth",
         "dados/ANADEM_Recorte_IPT_5m.tif",
-        "output/ANADEM_Recorte_REFINADO_10ep.tif",
+        "output/ANADEM_UNET3_20ep.tif",
         tile_size=256,
         overlap=0.25
     )

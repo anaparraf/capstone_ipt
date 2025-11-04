@@ -1,9 +1,6 @@
 """
-U-Net simétrica com Residual Blocks + mask-aware loss + Adam optimizer.
-Treina com dataset onde low_res e high_res estão na mesma resolução (ex: 5m -> 5m).
-Salva melhores checkpoints por PSNR de validação.
-
-Ajuste caminhos em __main__ antes de rodar.
+U-Net simétrica SIMPLIFICADA - SEM MÁSCARAS
+Versão limpa que não usa máscaras, apenas normalização global consistente
 """
 
 import os
@@ -24,6 +21,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+from scipy.ndimage import gaussian_filter
 
 # ---------------------------
 # Reprodutibilidade e dispositivo
@@ -38,30 +36,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Usando dispositivo: {device}")
 
 # ---------------------------
-# Utils: PSNR (mask-aware)
+# Utils: PSNR simples (sem máscara)
 # ---------------------------
-def calculate_psnr_masked(pred, target, mask, max_val=1.0):
-    """
-    pred, target: tensors (B,1,H,W)
-    mask: same shape with 0/1
-    returns average PSNR over batch considering only valid pixels
-    """
-    B = pred.size(0)
-    psnrs = []
-    for b in range(B):
-        m = mask[b:b+1].bool()
-        if m.sum() == 0:
-            continue
-        p = pred[b:b+1][m]
-        t = target[b:b+1][m]
-        mse = torch.mean((p - t) ** 2)
-        if mse == 0:
-            psnrs.append(100.0)
-        else:
-            psnrs.append((20 * torch.log10(torch.tensor(max_val) / torch.sqrt(mse))).item())
-    if len(psnrs) == 0:
-        return float('nan')
-    return float(np.mean(psnrs))
+def calculate_psnr(pred, target, max_val=1.0):
+    mse = torch.mean((pred - target) ** 2)
+    if mse == 0:
+        return 100.0
+    return (20 * torch.log10(torch.tensor(max_val) / torch.sqrt(mse))).item()
 
 # ---------------------------
 # Logger & Visualizer
@@ -151,108 +132,175 @@ class TrainingVisualizer:
         return out_png
 
 # ---------------------------
-# Dataset (same-resolution, returns mask)
+# Dataset SIMPLES - SEM MÁSCARAS
 # ---------------------------
-class SameResTiffDataset(Dataset):
-    def __init__(self, low_res_files, high_res_files, patch_size=128, samples_per_file=2000, transform=None):
+class SimpleDataset(Dataset):
+    def __init__(self, low_res_files, high_res_files, patch_size=128, samples_per_file=2000, 
+                 global_norm_stats=None):
         assert len(low_res_files) == len(high_res_files)
         self.low_res = [rasterio.open(p) for p in low_res_files]
         self.high_res = [rasterio.open(p) for p in high_res_files]
         self.patch_size = patch_size
         self.samples_per_file = samples_per_file
-        self.transform = transform
+        
+        # Calcular estatísticas globais
+        if global_norm_stats is None:
+            print("Calculando estatísticas globais...")
+            self.global_norm_stats = self._compute_global_stats()
+        else:
+            self.global_norm_stats = global_norm_stats
+        
+        print(f"Estatísticas globais: {self.global_norm_stats}")
 
-        for i, (l, h) in enumerate(zip(self.low_res, self.high_res), start=1):
-            lr = (abs(l.transform.a) + abs(l.transform.e)) / 2.0
-            hr = (abs(h.transform.a) + abs(h.transform.e)) / 2.0
-            print(f"Par {i}: low_res avg={lr:.3f} m, high_res avg={hr:.3f} m")
+    def _compute_global_stats(self):
+        all_low_samples = []
+        all_high_samples = []
+        
+        for low_src, high_src in zip(self.low_res, self.high_res):
+            low_data = low_src.read(1).astype(np.float32)
+            high_data = high_src.read(1).astype(np.float32)
+            
+            # Remover nodata e infinitos
+            low_valid = low_data[np.isfinite(low_data)]
+            high_valid = high_data[np.isfinite(high_data)]
+            
+            if low_src.nodata is not None:
+                low_valid = low_valid[low_valid != low_src.nodata]
+            if high_src.nodata is not None:
+                high_valid = high_valid[high_valid != high_src.nodata]
+            
+            # Amostragem
+            if len(low_valid) > 100000:
+                low_valid = np.random.choice(low_valid, 100000, replace=False)
+            if len(high_valid) > 100000:
+                high_valid = np.random.choice(high_valid, 100000, replace=False)
+            
+            all_low_samples.append(low_valid)
+            all_high_samples.append(high_valid)
+        
+        all_low = np.concatenate(all_low_samples)
+        all_high = np.concatenate(all_high_samples)
+        
+        return {
+            'low_p2': float(np.percentile(all_low, 2)),
+            'low_p98': float(np.percentile(all_low, 98)),
+            'high_p2': float(np.percentile(all_high, 2)),
+            'high_p98': float(np.percentile(all_high, 98))
+        }
 
     def __len__(self):
-        return max(1, len(self.low_res) * self.samples_per_file)
+        return len(self.low_res) * self.samples_per_file
 
-    def _normalize_and_mask(self, img, nodata):
+    def _normalize(self, img, nodata, is_low_res=True):
+        """Normalização simples sem máscaras"""
+        # Remover nodata
         if nodata is not None:
-            valid = (img != nodata) & np.isfinite(img)
+            img = np.where(img == nodata, np.nan, img)
+        
+        # Substituir NaN/Inf por valor médio
+        if np.any(~np.isfinite(img)):
+            valid = img[np.isfinite(img)]
+            if len(valid) > 0:
+                fill_value = np.median(valid)
+            else:
+                fill_value = 0.0
+            img = np.where(np.isfinite(img), img, fill_value)
+        
+        # Normalizar com estatísticas globais
+        if is_low_res:
+            p2 = self.global_norm_stats['low_p2']
+            p98 = self.global_norm_stats['low_p98']
         else:
-            valid = np.isfinite(img)
-        valid = valid.astype(np.uint8)
-        if not np.any(valid):
-            return np.zeros_like(img, dtype=np.float32), valid
-        arr = img.copy().astype(np.float32)
-        vals = arr[valid == 1]
-        p2, p98 = np.percentile(vals, [2, 98])
+            p2 = self.global_norm_stats['high_p2']
+            p98 = self.global_norm_stats['high_p98']
+        
         eps = 1e-6
         if (p98 - p2) <= eps:
             p98 = p2 + eps
-        norm = np.zeros_like(arr, dtype=np.float32)
-        norm[valid == 1] = np.clip((arr[valid == 1] - p2) / (p98 - p2), 0, 1)
-        # small augmentation noise
-        if np.random.rand() > 0.5:
-            norm = np.clip(norm + np.random.normal(0, 0.01, norm.shape).astype(np.float32), 0, 1)
-        return norm, valid
+        
+        normalized = np.clip((img - p2) / (p98 - p2), 0, 1).astype(np.float32)
+        
+        # Augmentation leve (20% das vezes)
+        if np.random.rand() > 0.8:
+            noise = np.random.normal(0, 0.003, normalized.shape).astype(np.float32)
+            normalized = np.clip(normalized + noise, 0, 1)
+        
+        return normalized
 
     def __getitem__(self, idx):
         file_idx = idx % len(self.low_res)
         low_src = self.low_res[file_idx]
         high_src = self.high_res[file_idx]
 
-        max_x = max(0, low_src.width - self.patch_size)
-        max_y = max(0, low_src.height - self.patch_size)
-        if max_x == 0 or max_y == 0:
-            w_low = Window(0, 0, min(low_src.width, self.patch_size), min(low_src.height, self.patch_size))
-            w_high = Window(0, 0, min(high_src.width, self.patch_size), min(high_src.height, self.patch_size))
+        # Garantir que a imagem é grande o suficiente
+        if low_src.width < self.patch_size or low_src.height < self.patch_size:
+            # Imagem muito pequena, ler tudo e fazer padding
+            low = low_src.read(1).astype(np.float32)
+            high = high_src.read(1).astype(np.float32)
         else:
-            rx = np.random.randint(0, max_x + 1)
-            ry = np.random.randint(0, max_y + 1)
-            w_low = Window(rx, ry, self.patch_size, self.patch_size)
-            w_high = Window(rx, ry, self.patch_size, self.patch_size)
+            # Extração de patch aleatório
+            max_x = low_src.width - self.patch_size
+            max_y = low_src.height - self.patch_size
+            
+            rx = np.random.randint(0, max_x + 1) if max_x > 0 else 0
+            ry = np.random.randint(0, max_y + 1) if max_y > 0 else 0
+            
+            w = Window(rx, ry, self.patch_size, self.patch_size)
 
-        try:
-            low = low_src.read(1, window=w_low).astype(np.float32)
-            high = high_src.read(1, window=w_high).astype(np.float32)
-        except Exception as e:
-            # fallback to top-left crop
-            low = low_src.read(1).astype(np.float32)[:self.patch_size, :self.patch_size]
-            high = high_src.read(1).astype(np.float32)[:self.patch_size, :self.patch_size]
+            try:
+                low = low_src.read(1, window=w).astype(np.float32)
+                high = high_src.read(1, window=w).astype(np.float32)
+            except:
+                low = low_src.read(1).astype(np.float32)
+                high = high_src.read(1).astype(np.float32)
 
-        low_n, mask_low = self._normalize_and_mask(low, low_src.nodata)
-        high_n, mask_high = self._normalize_and_mask(high, high_src.nodata)
+        # Normalizar
+        low_n = self._normalize(low, low_src.nodata, is_low_res=True)
+        high_n = self._normalize(high, high_src.nodata, is_low_res=False)
 
-        # ensure same shape; if mismatch, resample high to low shape
-        if low_n.shape != high_n.shape:
-            t = torch.from_numpy(high_n).unsqueeze(0).unsqueeze(0)
-            t = F.interpolate(t, size=low_n.shape, mode='bilinear', align_corners=False)
-            high_n = t.squeeze().numpy()
-            mask_high = (F.interpolate(torch.from_numpy(mask_high.astype(np.float32)).unsqueeze(0).unsqueeze(0),
-                                       size=low_n.shape, mode='nearest').squeeze().numpy().astype(np.uint8))
+        # GARANTIR TAMANHO EXATO (patch_size x patch_size)
+        h, w = low_n.shape
+        
+        # Se menor que patch_size, fazer padding
+        if h < self.patch_size or w < self.patch_size:
+            low_padded = np.zeros((self.patch_size, self.patch_size), dtype=np.float32)
+            high_padded = np.zeros((self.patch_size, self.patch_size), dtype=np.float32)
+            low_padded[:h, :w] = low_n
+            high_padded[:h, :w] = high_n
+            low_n = low_padded
+            high_n = high_padded
+        
+        # Se maior que patch_size, fazer crop
+        elif h > self.patch_size or w > self.patch_size:
+            low_n = low_n[:self.patch_size, :self.patch_size]
+            high_n = high_n[:self.patch_size, :self.patch_size]
+        
+        # Garantir que high_n tem o mesmo tamanho que low_n
+        if high_n.shape != low_n.shape:
+            high_padded = np.zeros_like(low_n)
+            min_h = min(high_n.shape[0], low_n.shape[0])
+            min_w = min(high_n.shape[1], low_n.shape[1])
+            high_padded[:min_h, :min_w] = high_n[:min_h, :min_w]
+            high_n = high_padded
 
-        low_t = torch.from_numpy(low_n).unsqueeze(0)   # (1,H,W)
+        low_t = torch.from_numpy(low_n).unsqueeze(0)
         high_t = torch.from_numpy(high_n).unsqueeze(0)
-        mask_t = torch.from_numpy((mask_high > 0).astype(np.float32)).unsqueeze(0)  # prefer mask of target
 
-        if self.transform:
-            low_t = self.transform(low_t)
-            high_t = self.transform(high_t)
-
-        return low_t, high_t, mask_t
+        return low_t, high_t
 
     def __del__(self):
         for d in getattr(self, 'low_res', []) + getattr(self, 'high_res', []):
             try:
                 d.close()
-            except Exception:
+            except:
                 pass
 
 # ---------------------------
-# Model: Symmetric UNet com ResidualConvBlock
+# Model: Symmetric UNet
 # ---------------------------
 def init_weights_he(m):
     if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
         nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
-        if m.bias is not None:
-            nn.init.zeros_(m.bias)
-    elif isinstance(m, nn.Linear):
-        nn.init.xavier_normal_(m.weight)
         if m.bias is not None:
             nn.init.zeros_(m.bias)
 
@@ -263,7 +311,7 @@ class ResidualConvBlock(nn.Module):
         self.conv2 = nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False)
         self.relu = nn.ReLU(inplace=True)
         self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
-        # norm layers
+        
         if norm_type == 'group':
             groups = min(8, out_ch)
             self.norm1 = nn.GroupNorm(groups, out_ch)
@@ -271,6 +319,7 @@ class ResidualConvBlock(nn.Module):
         else:
             self.norm1 = nn.BatchNorm2d(out_ch)
             self.norm2 = nn.BatchNorm2d(out_ch)
+        
         self.need_proj = (in_ch != out_ch)
         if self.need_proj:
             self.proj = nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False)
@@ -291,10 +340,6 @@ class ResidualConvBlock(nn.Module):
 
 class SymmetricUNet(nn.Module):
     def __init__(self, in_channels=1, out_channels=1, base_filters=32, depth=4, norm_type='group', dropout=0.0):
-        """
-        depth: número de níveis (por exemplo depth=4 => 4 enc blocks + bottleneck + 4 dec blocks)
-        base_filters: filtros no primeiro nível (ajustar conforme memória)
-        """
         super().__init__()
         self.depth = depth
         self.enc_blocks = nn.ModuleList()
@@ -305,18 +350,15 @@ class SymmetricUNet(nn.Module):
             out_ch = base_filters * (2 ** i)
             self.enc_blocks.append(ResidualConvBlock(in_ch, out_ch, norm_type=norm_type, dropout=dropout))
 
-        # bottleneck
         bottleneck_ch = base_filters * (2 ** (depth - 1))
         self.bottleneck = ResidualConvBlock(bottleneck_ch, bottleneck_ch * 2, norm_type=norm_type, dropout=dropout)
 
-        # decoder
         self.up_convs = nn.ModuleList()
         self.dec_blocks = nn.ModuleList()
         for i in reversed(range(depth)):
             up_in_ch = (bottleneck_ch * 2) if i == (depth - 1) else base_filters * (2 ** (i + 1))
             up_out_ch = base_filters * (2 ** i)
             self.up_convs.append(nn.ConvTranspose2d(up_in_ch, up_out_ch, kernel_size=2, stride=2))
-            # dec block takes concat of up + skip => in_ch = up_out_ch + skip_ch
             self.dec_blocks.append(ResidualConvBlock(up_out_ch + up_out_ch, up_out_ch, norm_type=norm_type, dropout=dropout))
 
         self.final_conv = nn.Conv2d(base_filters, out_channels, kernel_size=1)
@@ -344,108 +386,50 @@ class SymmetricUNet(nn.Module):
         return out
 
 # ---------------------------
-# Mask-aware Perceptual Loss (but can use only mse if desired)
+# Loss Function SIMPLES - SEM MÁSCARAS
 # ---------------------------
-class PerceptualLossMasked(nn.Module):
-    def __init__(self, eps=1e-6, use_ssim=False):
+class SimpleLoss(nn.Module):
+    def __init__(self, mse_weight=0.7, l1_weight=0.2, grad_weight=0.1):
         super().__init__()
-        self.eps = eps
-        self.use_ssim = use_ssim
+        self.mse_weight = mse_weight
+        self.l1_weight = l1_weight
+        self.grad_weight = grad_weight
 
-    def forward(self, pred, target, mask):
-        """
-        pred, target, mask: (B,1,H,W) ; mask values 0/1 float
-        Returns scalar loss
-        """
-        if mask is None:
-            mask = torch.ones_like(target, device=target.device)
-
-        # masked mse
-        mask_count = torch.clamp(mask.sum(dim=[1,2,3]), min=1.0)  # per-sample count
-        mse_map = ((pred - target)**2) * mask
-        mse_per_sample = mse_map.view(mse_map.size(0), -1).sum(dim=1) / mask_count
-        mse_loss = mse_per_sample.mean()
-
-        # masked l1
-        l1_map = torch.abs(pred - target) * mask
-        l1_per_sample = l1_map.view(l1_map.size(0), -1).sum(dim=1) / mask_count
-        l1_loss = l1_per_sample.mean()
-
-        grad_loss = self._masked_gradient_loss(pred, target, mask)
-
-        if self.use_ssim:
-            ssim_val = self._masked_ssim(pred, target, mask)
-            ssim_loss = 1.0 - ssim_val
-        else:
-            ssim_loss = torch.tensor(0.0, device=pred.device)
-
-        # weights: prefer começar com MSE + small L1 + small grad
-        total = 0.6 * mse_loss + 0.2 * l1_loss + 0.2 * grad_loss + 0.2 * ssim_loss
-        return total
-
-    def _masked_gradient_loss(self, pred, target, mask):
+    def forward(self, pred, target):
+        # MSE
+        mse_loss = F.mse_loss(pred, target)
+        
+        # L1
+        l1_loss = F.l1_loss(pred, target)
+        
+        # Gradiente (preserva estruturas)
         pgx = pred[:, :, :, 1:] - pred[:, :, :, :-1]
         pgy = pred[:, :, 1:, :] - pred[:, :, :-1, :]
         tgx = target[:, :, :, 1:] - target[:, :, :, :-1]
         tgy = target[:, :, 1:, :] - target[:, :, :-1, :]
-
-        mask_gx = mask[:, :, :, 1:] * mask[:, :, :, :-1]
-        mask_gy = mask[:, :, 1:, :] * mask[:, :, :-1, :]
-
-        loss_gx = torch.abs(pgx - tgx) * mask_gx
-        loss_gy = torch.abs(pgy - tgy) * mask_gy
-
-        cnt_gx = torch.clamp(mask_gx.sum(dim=[1,2,3]), min=1.0)
-        cnt_gy = torch.clamp(mask_gy.sum(dim=[1,2,3]), min=1.0)
-
-        loss_gx_b = loss_gx.view(loss_gx.size(0), -1).sum(dim=1) / cnt_gx
-        loss_gy_b = loss_gy.view(loss_gy.size(0), -1).sum(dim=1) / cnt_gy
-
-        return (loss_gx_b + loss_gy_b).mean()
-
-    def _masked_ssim(self, pred, target, mask):
-        # robust global approximate SSIM on valid pixels (per sample)
-        B = pred.size(0)
-        vals = []
-        for b in range(B):
-            mb = mask[b:b+1].bool()
-            if mb.sum() < 16:
-                vals.append(torch.tensor(0.0, device=pred.device))
-                continue
-            p = pred[b:b+1][mb]
-            t = target[b:b+1][mb]
-            mu_p = p.mean(); mu_t = t.mean()
-            sigma_p2 = p.var(unbiased=False)
-            sigma_t2 = t.var(unbiased=False)
-            sigma_pt = ((p - mu_p) * (t - mu_t)).mean()
-            C1 = 0.01 ** 2; C2 = 0.03 ** 2
-            denom = (mu_p**2 + mu_t**2 + C1) * (sigma_p2 + sigma_t2 + C2)
-            if denom == 0:
-                vals.append(torch.tensor(0.0, device=pred.device))
-            else:
-                ssim_b = ((2*mu_p*mu_t + C1) * (2*sigma_pt + C2)) / denom
-                vals.append(torch.clamp(ssim_b, 0.0, 1.0))
-        return torch.stack(vals).mean()
+        
+        grad_loss = F.l1_loss(pgx, tgx) + F.l1_loss(pgy, tgy)
+        
+        total = self.mse_weight * mse_loss + self.l1_weight * l1_loss + self.grad_weight * grad_loss
+        return total
 
 # ---------------------------
-# Training + Validation loop
+# Training
 # ---------------------------
 def train_and_validate(
     train_low_files, train_high_files,
     val_low_files, val_high_files,
     epochs=30, batch_size=2, patch_size=128,
     base_filters=32, depth=4, lr=1e-4, weight_decay=1e-6,
-    save_path="model/unet_sym_masked_adam.pth",
-    samples_per_file=1000, use_ssim=False, norm_type='group', dropout=0.05
+    save_path="model/unet_simple.pth",
+    samples_per_file=1000, norm_type='group', dropout=0.03
 ):
     os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
-    debug_dir = "debug_nan_batches"
-    os.makedirs(debug_dir, exist_ok=True)
-
     logger = TrainingLogger(log_dir="logs")
 
-    train_ds = SameResTiffDataset(train_low_files, train_high_files, patch_size=patch_size, samples_per_file=samples_per_file)
-    val_ds = SameResTiffDataset(val_low_files, val_high_files, patch_size=patch_size, samples_per_file=max(200, samples_per_file//10))
+    train_ds = SimpleDataset(train_low_files, train_high_files, patch_size=patch_size, samples_per_file=samples_per_file)
+    val_ds = SimpleDataset(val_low_files, val_high_files, patch_size=patch_size, samples_per_file=max(200, samples_per_file//10), 
+                          global_norm_stats=train_ds.global_norm_stats)
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=torch.cuda.is_available())
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=0, pin_memory=torch.cuda.is_available())
@@ -453,53 +437,33 @@ def train_and_validate(
     model = SymmetricUNet(in_channels=1, out_channels=1, base_filters=base_filters, depth=depth, norm_type=norm_type, dropout=dropout).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=6, verbose=True)
-    criterion = PerceptualLossMasked(use_ssim=use_ssim).to(device)
+    criterion = SimpleLoss(mse_weight=0.7, l1_weight=0.2, grad_weight=0.1).to(device)
 
     config = {
         'epochs': epochs, 'batch_size': batch_size, 'patch_size': patch_size,
         'base_filters': base_filters, 'depth': depth, 'lr': lr, 'weight_decay': weight_decay,
-        'use_ssim': use_ssim, 'norm_type': norm_type, 'dropout': dropout
+        'norm_type': norm_type, 'dropout': dropout,
+        'global_norm_stats': train_ds.global_norm_stats
     }
     logger.set_config(config)
 
-    best_val_psnr = -np.inf
+    best_val_loss = float('inf')
     best_checkpoint = None
 
-    print(f"Inicio do treino: {epochs} épocas, lr={lr}, base_filters={base_filters}, depth={depth}")
+    print(f"Inicio do treino: {epochs} épocas, lr={lr}")
     for epoch in range(1, epochs + 1):
         model.train()
         epoch_start = time.time()
         running_loss = 0.0
         n_batches = 0
 
-        for batch_idx, (low, high, mask) in enumerate(train_loader):
-            low = low.to(device); high = high.to(device); mask = mask.to(device)
-
-            # checks
-            if not torch.isfinite(low).all() or not torch.isfinite(high).all():
-                print(f"[Treino] Epoch {epoch} Batch {batch_idx}: dados inválidos (NaN/Inf) — salvando e pulando")
-                fname = os.path.join(debug_dir, f"invalid_train_e{epoch}_b{batch_idx}.npz")
-                np.savez_compressed(fname, low=low.cpu().numpy(), high=high.cpu().numpy(), mask=mask.cpu().numpy())
-                continue
-            if mask.sum() < 1.0:
-                continue
+        for batch_idx, (low, high) in enumerate(train_loader):
+            low = low.to(device)
+            high = high.to(device)
 
             optimizer.zero_grad()
             preds = model(low)
-
-            if not torch.isfinite(preds).all():
-                print(f"[Treino] Epoch {epoch} Batch {batch_idx}: preds contém NaN/Inf — salvando e pulando")
-                fname = os.path.join(debug_dir, f"prednan_train_e{epoch}_b{batch_idx}.npz")
-                np.savez_compressed(fname, low=low.cpu().numpy(), high=high.cpu().numpy(), mask=mask.cpu().numpy(), preds=preds.cpu().detach().numpy())
-                continue
-
-            loss = criterion(preds, high, mask)
-            if torch.isnan(loss) or torch.isinf(loss):
-                print(f"[Treino] Epoch {epoch} Batch {batch_idx}: loss NaN/Inf — salvando e pulando")
-                fname = os.path.join(debug_dir, f"lossnan_train_e{epoch}_b{batch_idx}.npz")
-                np.savez_compressed(fname, low=low.cpu().numpy(), high=high.cpu().numpy(), mask=mask.cpu().numpy(), preds=preds.cpu().detach().numpy())
-                continue
-
+            loss = criterion(preds, high)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -510,7 +474,7 @@ def train_and_validate(
             if batch_idx % 50 == 0:
                 lr_now = optimizer.param_groups[0]['lr']
                 print(f"Epoch [{epoch}/{epochs}] Batch [{batch_idx}] loss={loss.item():.6f} lr={lr_now:.2e}")
-                logger.log_batch(epoch, batch_idx, loss.item(), optimizer.param_groups[0]['lr'])
+                logger.log_batch(epoch, batch_idx, loss.item(), lr_now)
 
         avg_train_loss = running_loss / n_batches if n_batches > 0 else float('nan')
 
@@ -519,166 +483,242 @@ def train_and_validate(
         val_loss_acc = 0.0
         val_batches = 0
         val_psnr_acc = 0.0
-        val_psnr_count = 0
 
         with torch.no_grad():
-            for low_v, high_v, mask_v in val_loader:
-                low_v = low_v.to(device); high_v = high_v.to(device); mask_v = mask_v.to(device)
-                if mask_v.sum() < 1.0:
-                    continue
+            for low_v, high_v in val_loader:
+                low_v = low_v.to(device)
+                high_v = high_v.to(device)
                 out_v = model(low_v)
-                loss_v = criterion(out_v, high_v, mask_v)
+                loss_v = criterion(out_v, high_v)
                 val_loss_acc += loss_v.item()
                 val_batches += 1
-                psnr_v = calculate_psnr_masked(out_v, high_v, mask_v)
-                if not np.isnan(psnr_v):
-                    val_psnr_acc += psnr_v
-                    val_psnr_count += 1
+                psnr_v = calculate_psnr(out_v, high_v)
+                val_psnr_acc += psnr_v
 
         avg_val_loss = val_loss_acc / val_batches if val_batches > 0 else float('nan')
-        avg_val_psnr = val_psnr_acc / val_psnr_count if val_psnr_count > 0 else float('nan')
+        avg_val_psnr = val_psnr_acc / val_batches if val_batches > 0 else float('nan')
 
-        # scheduler step on validation loss
-        scheduler.step(avg_val_loss if np.isfinite(avg_val_loss) else float('inf'))
+        scheduler.step(avg_val_loss)
 
-        # logging
         lr_now = optimizer.param_groups[0]['lr']
         logger.log_epoch(epoch, avg_train_loss, avg_val_loss, None, avg_val_psnr, lr_now)
 
         elapsed = time.time() - epoch_start
-        print(f"Epoch {epoch} summary: train_loss={avg_train_loss:.6f}, val_loss={avg_val_loss:.6f}, val_psnr={avg_val_psnr:.2f} dB, time={elapsed/60:.2f} min")
+        print(f"Epoch {epoch}: train_loss={avg_train_loss:.6f}, val_loss={avg_val_loss:.6f}, val_psnr={avg_val_psnr:.2f} dB, time={elapsed/60:.2f} min")
 
-        # checkpoint by best val PSNR
-        if np.isfinite(avg_val_psnr) and avg_val_psnr > best_val_psnr:
-            best_val_psnr = avg_val_psnr
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
             best_checkpoint = {
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'val_psnr': best_val_psnr,
+                'val_loss': best_val_loss,
                 'config': config
             }
             torch.save(best_checkpoint, save_path)
-            print(f"Novo melhor PSNR={best_val_psnr:.2f} dB -> modelo salvo: {save_path}")
+            print(f"✓ Melhor modelo salvo: val_loss={best_val_loss:.6f}")
 
     print("Treinamento finalizado.")
     return model, logger.get_log_file(), best_checkpoint
 
 # ---------------------------
-# Inference / generation (tile-based)
+# GERAÇÃO LIMPA - SEM MÁSCARAS
 # ---------------------------
-def generate_same_res(model_ckpt_path, input_raster, output_raster, tile_size=256, overlap=0.5, device=None):
+def generate_clean(model_ckpt_path, input_raster, output_raster, tile_size=512, overlap=0.25, device=None):
+    """Geração limpa sem máscaras e com blending suave"""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     ckpt = torch.load(model_ckpt_path, map_location=device)
     cfg = ckpt.get('config', {})
     base_filters = cfg.get('base_filters', 32)
     depth = cfg.get('depth', 4)
     norm_type = cfg.get('norm_type', 'group')
+    global_norm_stats = cfg.get('global_norm_stats', None)
+    
     model = SymmetricUNet(in_channels=1, out_channels=1, base_filters=base_filters, depth=depth, norm_type=norm_type).to(device)
     model.load_state_dict(ckpt['model_state_dict'])
     model.eval()
+
+    print(f"Gerando output com tiles {tile_size}x{tile_size}, overlap={overlap*100:.0f}%")
 
     with rasterio.open(input_raster) as src:
         img = src.read(1).astype(np.float32)
         profile = src.profile.copy()
         nodata = src.nodata
-        valid_mask = np.isfinite(img)
+        
+        # Substituir nodata por mediana
         if nodata is not None:
-            valid_mask &= (img != nodata)
-        if not np.any(valid_mask):
-            print("Imagem sem dados válidos! Abortando.")
+            img = np.where(img == nodata, np.nan, img)
+        
+        valid = img[np.isfinite(img)]
+        if len(valid) == 0:
+            print("Imagem sem dados válidos!")
             return
-        valid = img[valid_mask]
-        p2, p98 = np.percentile(valid, [2,98])
+        
+        fill_value = np.median(valid)
+        img = np.where(np.isfinite(img), img, fill_value)
+        
+        # Normalização global
+        if global_norm_stats is not None:
+            p2 = global_norm_stats['low_p2']
+            p98 = global_norm_stats['low_p98']
+            print(f"Usando stats globais: p2={p2:.2f}, p98={p98:.2f}")
+        else:
+            p2, p98 = np.percentile(img, [2, 98])
+            print(f"Stats locais: p2={p2:.2f}, p98={p98:.2f}")
+        
         eps = 1e-6
         if (p98 - p2) <= eps:
             p98 = p2 + eps
-        img_norm = np.zeros_like(img, dtype=np.float32)
-        img_norm[valid_mask] = np.clip((img[valid_mask] - p2) / (p98 - p2), 0, 1)
+        
+        img_norm = np.clip((img - p2) / (p98 - p2), 0, 1).astype(np.float32)
 
-        out_h = img.shape[0]; out_w = img.shape[1]
+        out_h, out_w = img.shape
         output = np.zeros((out_h, out_w), dtype=np.float32)
         weight = np.zeros_like(output, dtype=np.float32)
-        hann = np.outer(np.hanning(tile_size), np.hanning(tile_size))
-        step = int(tile_size * (1-overlap))
-        rows = list(range(0, img.shape[0], step))
-        cols = list(range(0, img.shape[1], step))
+        
+        # Máscara de blending suave
+        def create_blend_mask(size, border):
+            mask = np.ones((size, size), dtype=np.float32)
+            for i in range(border):
+                alpha = (i + 1) / border
+                mask[i, :] *= alpha
+                mask[-(i+1), :] *= alpha
+                mask[:, i] *= alpha
+                mask[:, -(i+1)] *= alpha
+            return mask
+        
+        border = int(tile_size * overlap / 2)
+        blend_mask = create_blend_mask(tile_size, border)
+        
+        step = int(tile_size * (1 - overlap))
+        rows = list(range(0, out_h, step))
+        cols = list(range(0, out_w, step))
+        
+        if rows[-1] + tile_size < out_h:
+            rows.append(out_h - tile_size)
+        if cols[-1] + tile_size < out_w:
+            cols.append(out_w - tile_size)
+        
         total = len(rows) * len(cols)
         processed = 0
 
+        print(f"Processando {total} tiles...")
+        
         for i in rows:
             for j in cols:
-                i_end = min(i+tile_size, img.shape[0]); j_end = min(j+tile_size, img.shape[1])
-                tile = img_norm[i:i_end, j:j_end]; th, tw = tile.shape
-                pad = np.zeros((tile_size, tile_size), dtype=np.float32); pad[:th,:tw] = tile
-                weight_mask = np.zeros((tile_size, tile_size), dtype=np.float32); weight_mask[:th,:tw] = hann[:th,:tw]
-                t_tensor = torch.from_numpy(pad).unsqueeze(0).unsqueeze(0).to(device).float()
+                i_start = max(0, i)
+                j_start = max(0, j)
+                i_end = min(i_start + tile_size, out_h)
+                j_end = min(j_start + tile_size, out_w)
+                
+                tile = img_norm[i_start:i_end, j_start:j_end]
+                th, tw = tile.shape
+                
+                if th < tile_size or tw < tile_size:
+                    pad = np.zeros((tile_size, tile_size), dtype=np.float32)
+                    pad[:th, :tw] = tile
+                    tile_input = pad
+                else:
+                    tile_input = tile
+                
+                t_tensor = torch.from_numpy(tile_input).unsqueeze(0).unsqueeze(0).to(device)
                 with torch.no_grad():
                     out_tile = model(t_tensor).cpu().numpy().squeeze()
+                
                 out_valid = out_tile[:th, :tw]
-                w_valid = weight_mask[:th, :tw]
-                output[i:i_end, j:j_end] += out_valid * w_valid
-                weight[i:i_end, j:j_end] += w_valid
+                weight_mask = blend_mask[:th, :tw]
+                
+                output[i_start:i_end, j_start:j_end] += out_valid * weight_mask
+                weight[i_start:i_end, j_start:j_end] += weight_mask
+                
                 processed += 1
                 if processed % 50 == 0 or processed == total:
-                    print(f"Tiles processados: {processed}/{total}")
+                    print(f"  {processed}/{total} ({100*processed/total:.1f}%)")
 
+        # Normalizar
         valid_w = weight > 1e-6
         output[valid_w] /= weight[valid_w]
-        output = output * (p98 - p2 + 1e-8) + p2
+        
+        # Desnormalizar
+        output = output * (p98 - p2) + p2
+        
+        # Aplicar nodata onde necessário
         if nodata is not None:
             output[~valid_w] = float(nodata)
-        profile.update(dtype='float32', count=1)
+        
+        # Suavização MUITO LEVE (opcional - remover se não quiser)
+        # output = gaussian_filter(output, sigma=0.3)
+        
+        profile.update(dtype='float32', count=1, nodata=nodata)
         os.makedirs(os.path.dirname(output_raster) or ".", exist_ok=True)
+        
         with rasterio.open(output_raster, 'w', **profile) as dst:
             dst.write(output.astype(np.float32), 1)
-        print(f"Output salvo: {output_raster}")
+        
+        print(f"✓ Output salvo: {output_raster}")
+        print(f"  Stats: min={output[valid_w].min():.2f}, max={output[valid_w].max():.2f}, mean={output[valid_w].mean():.2f}")
+
 
 # ---------------------------
-# Execução principal (ajuste caminhos)
+# Execução principal
 # ---------------------------
 if __name__ == "__main__":
-    # ajuste caminhos para seus dados
-    train_low_files = ["dados/anadem_5m.tif"]   # exemplo
-    train_high_files = ["dados/geosampa_5m.tif"]
-    val_low_files = ["dados/ANADEM_Recorte_IPT_5m.tif"]       # validação - região diferente
-    val_high_files = ["dados/GEOSAMPA_Recorte_IPT.tif"]
-
+    # AJUSTE ESTES CAMINHOS
+    train_low_files = ["dados/anadem_5m.tif"]
+    train_high_files = ["dados/geosampa_5m_reprojetado.tif"]
+    val_low_files = ["dados/ANADEM_Recorte_IPT_5m.tif"]
+    val_high_files = ["dados/GEOSAMPA_Recorte_IPT_reamostrado_5m.tif"]
 
     os.makedirs("model", exist_ok=True)
     os.makedirs("output", exist_ok=True)
 
+    # TREINAMENTO
+    print("="*60)
+    print("INICIANDO TREINAMENTO (SEM MÁSCARAS)")
+    print("="*60)
+    
     model, log_file, best_ckpt = train_and_validate(
         train_low_files, train_high_files,
         val_low_files, val_high_files,
-        epochs=30,
-        batch_size=2,
+        epochs=40,              # Reduzi para testar mais rápido
+        batch_size=2,           # Voltei para 2 (mais seguro)
         patch_size=128,
         base_filters=32,
-        depth=4,                # se pouca VRAM, reduzir base_filters ou depth
+        depth=4,
         lr=1e-4,
         weight_decay=1e-6,
-        save_path="model/unet_sym_masked_adam_bestpsnr.pth",
-        samples_per_file=1000,
-        use_ssim=False,         # começar False; depois testar True
+        save_path="model/unet_clean_nomask.pth",
+        samples_per_file=500,   # Reduzi para treinar mais rápido
         norm_type='group',
-        dropout=0.03
+        dropout=0.02
     )
 
+    # GRÁFICOS
     print("="*60)
     print("GERANDO GRÁFICOS")
     print("="*60)
     TrainingVisualizer.plot_training_curves(log_file)
 
+    # INFERÊNCIA LIMPA
     print("="*60)
-    print("INFERÊNCIA (gerar raster melhorado)")
+    print("INFERÊNCIA LIMPA (SEM MÁSCARAS)")
     print("="*60)
-    if best_ckpt is not None:
-        ckpt_path = "model/unet_sym_masked_adam_bestpsnr.pth"
+    
+    ckpt_path = "model/unet_clean_nomask.pth"
+    if os.path.exists(ckpt_path):
+        generate_clean(
+            ckpt_path, 
+            "dados/ANADEM_Recorte_IPT_5m.tif", 
+            "output/ANADEM_clean_nomask.tif", 
+            tile_size=1024,
+            overlap=0.6,
+            device=device
+        )
     else:
-        ckpt_path = None
-    if ckpt_path and os.path.exists(ckpt_path):
-        generate_same_res(ckpt_path, "dados/ANADEM_Recorte_IPT_5m.tif", "output/ANADEM_Recorte_IPT_5m_improved_unet.tif", tile_size=256, overlap=0.5)
-    else:
-        print("Nenhum checkpoint encontrado para inferência. Rode treino primeiro ou ajuste caminho.")
+        print(f"Checkpoint não encontrado: {ckpt_path}")
+    
+    print("="*60)
+    print("FINALIZADO!")
+    print("="*60)
