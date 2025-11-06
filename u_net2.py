@@ -26,7 +26,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Usando dispositivo: {device}")
 
 # ================================
-# Dataset (mantive seu código)
+# Dataset com normalização Z-score
 # ================================
 class DEMRefinementDataset(Dataset):
     """
@@ -34,11 +34,12 @@ class DEMRefinementDataset(Dataset):
     - input1: ANADEM (menos detalhado, 5m)
     - input2: GeoSampa (mais detalhado, 5m)
     - target: GeoSampa (ground truth para treinamento)
+    
+    MODIFICAÇÃO: Normalização Z-score para preservar feições sutis
     """
     def __init__(self, input1_files, input2_files, target_files=None, transform=None, patch_size=128):
         self.input1_datasets = [rasterio.open(f) for f in input1_files]
         self.input2_datasets = [rasterio.open(f) for f in input2_files]
-        # Se target_files não for fornecido, usa input2 como target
         self.target_datasets = [rasterio.open(f) for f in (target_files or input2_files)]
 
         self.transform = transform
@@ -61,7 +62,7 @@ class DEMRefinementDataset(Dataset):
             print(f"Arquivo {idx+1}: Input1={res1_x:.2f}m, Input2={res2_x:.2f}m, Target={tgt_x:.2f}m")
 
     def __len__(self):
-        return 10000  # Número de patches por época
+        return 20000  # Aumentado para mais variabilidade
 
     def __getitem__(self, idx):
         file_idx = np.random.randint(0, len(self.input1_datasets))
@@ -90,10 +91,15 @@ class DEMRefinementDataset(Dataset):
             img2 = src2.read(1).astype(np.float32)[:self.patch_size, :self.patch_size]
             img_target = tgt.read(1).astype(np.float32)[:self.patch_size, :self.patch_size]
 
-        # Normalização
-        img1_norm = self._normalize_image(img1, src1.nodata)
-        img2_norm = self._normalize_image(img2, src2.nodata)
-        img_target_norm = self._normalize_image(img_target, tgt.nodata)
+        # *** NOVA NORMALIZAÇÃO Z-SCORE ***
+        img1_norm = self._normalize_zscore(img1, src1.nodata)
+        img2_norm = self._normalize_zscore(img2, src2.nodata)
+        img_target_norm = self._normalize_zscore(img_target, tgt.nodata)
+
+        # Augmentation que preserva estruturas
+        img1_norm, img2_norm, img_target_norm = self._augment_preserve_structure(
+            img1_norm, img2_norm, img_target_norm
+        )
 
         # Concatenar as duas entradas em canais diferentes
         input_tensor = torch.stack([
@@ -109,8 +115,15 @@ class DEMRefinementDataset(Dataset):
 
         return input_tensor, target_tensor
 
-    def _normalize_image(self, img, nodata_value):
-        """Normaliza imagem de forma robusta"""
+    def _normalize_zscore(self, img, nodata_value):
+        """
+        Normalização Z-score: preserva variações relativas (essencial para rios!)
+        
+        Vantagem sobre percentis:
+        - Rios com variação de 2-5m mantêm contraste relativo
+        - Não esmaga feições sutis
+        - Média=0, desvio=1 → melhor para redes neurais
+        """
         if nodata_value is not None:
             valid_mask = img != nodata_value
         else:
@@ -120,20 +133,52 @@ class DEMRefinementDataset(Dataset):
             return np.zeros_like(img, dtype=np.float32)
 
         valid_data = img[valid_mask]
-        p2, p98 = np.percentile(valid_data, [2, 98])
+        mean = np.mean(valid_data)
+        std = np.std(valid_data)
 
-        if p98 - p2 > 0:
-            img_norm = np.zeros_like(img, dtype=np.float32)
-            img_norm[valid_mask] = np.clip((img[valid_mask] - p2) / (p98 - p2), 0, 1)
-
-            # Data augmentation leve
-            if np.random.random() > 0.5:
-                noise = np.random.normal(0, 0.02, img_norm.shape).astype(np.float32)
-                img_norm = np.clip(img_norm + noise, 0, 1)
-
-            return img_norm
+        img_norm = np.zeros_like(img, dtype=np.float32)
+        
+        if std > 1e-6:  # Evita divisão por zero
+            # Normalização Z-score
+            img_norm[valid_mask] = (img[valid_mask] - mean) / std
+            
+            # Clip extremos (mas preserva 99.7% dos dados = ±3σ)
+            img_norm = np.clip(img_norm, -3, 3)
+            
+            # Rescale para [0, 1] para compatibilidade com a rede
+            img_norm = (img_norm + 3) / 6
         else:
-            return np.zeros_like(img, dtype=np.float32)
+            # Região plana (sem variação)
+            img_norm[valid_mask] = 0.5
+
+        return img_norm
+
+    def _augment_preserve_structure(self, img1, img2, target):
+        """
+        Data augmentation que PRESERVA estruturas topográficas
+        - SEM ruído Gaussiano (destrói feições finas)
+        - Apenas transformações geométricas
+        """
+        # Flip horizontal (50% chance)
+        if np.random.random() > 0.5:
+            img1 = np.flip(img1, axis=1).copy()
+            img2 = np.flip(img2, axis=1).copy()
+            target = np.flip(target, axis=1).copy()
+        
+        # Flip vertical (50% chance)
+        if np.random.random() > 0.5:
+            img1 = np.flip(img1, axis=0).copy()
+            img2 = np.flip(img2, axis=0).copy()
+            target = np.flip(target, axis=0).copy()
+        
+        # Rotação 90° (0°, 90°, 180°, 270°)
+        k = np.random.randint(0, 4)
+        if k > 0:
+            img1 = np.rot90(img1, k).copy()
+            img2 = np.rot90(img2, k).copy()
+            target = np.rot90(target, k).copy()
+        
+        return img1, img2, target
 
     def __del__(self):
         for dataset in (self.input1_datasets + self.input2_datasets + self.target_datasets):
@@ -226,9 +271,16 @@ class DEMRefinementUNet(nn.Module):
 
 
 # ================================
-# Loss combinada (mantida)
+# Loss com Curvature (detecta rios!)
 # ================================
-class PerceptualLoss(nn.Module):
+class TopographicLoss(nn.Module):
+    """
+    Loss especializada para topografia:
+    - MSE: erro absoluto
+    - L1: erro robusto
+    - Gradient: bordas/declives
+    - Curvature (NOVO): detecta concavidades (rios/vales)
+    """
     def __init__(self):
         super().__init__()
         self.mse = nn.MSELoss()
@@ -238,9 +290,13 @@ class PerceptualLoss(nn.Module):
         mse_loss = self.mse(pred, target)
         l1_loss = self.l1(pred, target)
         grad_loss = self._gradient_loss(pred, target)
-        return 0.4 * mse_loss + 0.3 * l1_loss + 0.3 * grad_loss
+        curv_loss = self._curvature_loss(pred, target)
+        
+        # Pesos ajustados: curvature é crítico para rios!
+        return 0.3 * mse_loss + 0.2 * l1_loss + 0.3 * grad_loss + 0.2 * curv_loss
 
     def _gradient_loss(self, pred, target):
+        """Detecta bordas e declives"""
         def gradient(img):
             grad_x = img[:, :, :, 1:] - img[:, :, :, :-1]
             grad_y = img[:, :, 1:, :] - img[:, :, :-1, :]
@@ -254,23 +310,68 @@ class PerceptualLoss(nn.Module):
 
         return loss_x + loss_y
 
+    def _curvature_loss(self, pred, target):
+        """
+        Laplaciano (2ª derivada): detecta concavidades
+        
+        Rios = regiões côncavas (Laplaciano positivo)
+        Cumeadas = regiões convexas (Laplaciano negativo)
+        """
+        def laplacian(img):
+            # Kernel Laplaciano discreto
+            kernel = torch.tensor([[0, 1, 0],
+                                   [1, -4, 1],
+                                   [0, 1, 0]], 
+                                  dtype=img.dtype, device=img.device)
+            kernel = kernel.view(1, 1, 3, 3)
+            
+            # Replicar kernel para todos os canais
+            kernel = kernel.repeat(img.size(1), 1, 1, 1)
+            
+            # Convolução (groups=channels para aplicar por canal)
+            lapl = F.conv2d(img, kernel, padding=1, groups=img.size(1))
+            return lapl
+        
+        pred_lapl = laplacian(pred)
+        target_lapl = laplacian(target)
+        
+        return F.l1_loss(pred_lapl, target_lapl)
+
 
 # ================================
-# Função utilitária para calcular gradient loss (mesma lógica)
+# Função para visualizar patches durante treino
 # ================================
-def compute_gradient_loss(pred, target):
-    """Mantém a mesma formulação para cálculo explícito em métricas"""
-    def gradient(img):
-        grad_x = img[:, :, :, 1:] - img[:, :, :, :-1]
-        grad_y = img[:, :, 1:, :] - img[:, :, :-1, :]
-        return grad_x, grad_y
-
-    pred_grad_x, pred_grad_y = gradient(pred)
-    target_grad_x, target_grad_y = gradient(target)
-
-    loss_x = F.l1_loss(pred_grad_x, target_grad_x)
-    loss_y = F.l1_loss(pred_grad_y, target_grad_y)
-    return loss_x + loss_y
+def visualize_batch(inputs, targets, predictions, epoch, batch_idx, save_dir="debug_patches"):
+    """Salva visualizações para debug"""
+    os.makedirs(save_dir, exist_ok=True)
+    
+    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+    
+    # Primeiro exemplo do batch
+    anadem = inputs[0, 0].cpu().numpy()
+    geosampa_in = inputs[0, 1].cpu().numpy()
+    target = targets[0, 0].cpu().numpy()
+    pred = predictions[0, 0].detach().cpu().numpy()
+    
+    axes[0].imshow(anadem, cmap='terrain')
+    axes[0].set_title('Input ANADEM')
+    axes[0].axis('off')
+    
+    axes[1].imshow(geosampa_in, cmap='terrain')
+    axes[1].set_title('Input GeoSampa')
+    axes[1].axis('off')
+    
+    axes[2].imshow(target, cmap='terrain')
+    axes[2].set_title('Target')
+    axes[2].axis('off')
+    
+    axes[3].imshow(pred, cmap='terrain')
+    axes[3].set_title('Prediction')
+    axes[3].axis('off')
+    
+    plt.tight_layout()
+    plt.savefig(f"{save_dir}/epoch{epoch:03d}_batch{batch_idx:04d}.png", dpi=100)
+    plt.close()
 
 
 # ================================
@@ -281,6 +382,7 @@ def train_dem_refinement(input1_files, input2_files, target_files=None,
                          patch_size=128, save_path="model/dem_refinement_unet.pth",
                          output_metrics_dir="output_metrics"):
     print("Iniciando treinamento de refinamento de DEM")
+    print(f"MODIFICAÇÕES: Z-score normalization + Curvature loss + patch_size={patch_size}")
     start_time = time.time()
 
     dataset = DEMRefinementDataset(
@@ -301,7 +403,7 @@ def train_dem_refinement(input1_files, input2_files, target_files=None,
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5,
                                                      patience=10, verbose=True)
-    criterion = PerceptualLoss().to(device)
+    criterion = TopographicLoss().to(device)  # *** NOVA LOSS ***
 
     model.train()
     best_loss = float('inf')
@@ -339,33 +441,41 @@ def train_dem_refinement(input1_files, input2_files, target_files=None,
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
-            # Cálculos de componentes para logging (torch tensors)
+            # Cálculos de componentes para logging
             mse_val = F.mse_loss(predictions, targets).item()
             l1_val = F.l1_loss(predictions, targets).item()
+            
+            # Gradient loss
+            def compute_gradient_loss(pred, target):
+                def gradient(img):
+                    grad_x = img[:, :, :, 1:] - img[:, :, :, :-1]
+                    grad_y = img[:, :, 1:, :] - img[:, :, :-1, :]
+                    return grad_x, grad_y
+                pred_grad_x, pred_grad_y = gradient(pred)
+                target_grad_x, target_grad_y = gradient(target)
+                loss_x = F.l1_loss(pred_grad_x, target_grad_x)
+                loss_y = F.l1_loss(pred_grad_y, target_grad_y)
+                return loss_x + loss_y
+            
             grad_val = compute_gradient_loss(predictions, targets).item()
 
-            # PSNR / SSIM: converter por amostra (CPU numpy)
-            # predictions: [B,1,H,W], targets: [B,1,H,W]
+            # PSNR / SSIM
             preds_np = predictions.detach().cpu().numpy()
             targs_np = targets.detach().cpu().numpy()
             batch_ssim = 0.0
             batch_psnr = 0.0
             B = preds_np.shape[0]
             for b in range(B):
-                # squeeze 2D arrays
                 p = np.squeeze(preds_np[b])
                 t = np.squeeze(targs_np[b])
-                # PSNR/SSIM assumindo range [0,1]
                 try:
                     batch_psnr += sk_psnr(t, p, data_range=1.0)
                 except Exception:
-                    # se ambos constantes ou erro numérico
                     batch_psnr += 0.0
                 try:
-                    # sk_ssim retorna float; se imagens pequenas, ajuste win_size automático? deixamos default
                     batch_ssim += 1.0 - sk_ssim(t, p, data_range=1.0)
                 except Exception:
-                    batch_ssim += 1.0  # perda máxima em caso de erro
+                    batch_ssim += 1.0
 
             batch_ssim /= B
             batch_psnr /= B
@@ -379,10 +489,12 @@ def train_dem_refinement(input1_files, input2_files, target_files=None,
 
             num_batches += 1
 
-            if batch_idx % 50 == 0:
-                print(f"Época [{epoch+1}/{epochs}], Batch [{batch_idx}], Loss: {loss.item():.6f}, LR: {optimizer.param_groups[0]['lr']:.6f}")
+            # Visualizar patches a cada 100 batches
+            if batch_idx % 100 == 0:
+                print(f"Época [{epoch+1}/{epochs}], Batch [{batch_idx}], Loss: {loss.item():.6f}")
+                visualize_batch(inputs, targets, predictions, epoch, batch_idx)
 
-        # médias por época
+        # Médias por época
         avg_total = epoch_total_loss / num_batches if num_batches > 0 else float('inf')
         avg_mse = epoch_mse / num_batches
         avg_l1 = epoch_l1 / num_batches
@@ -414,19 +526,19 @@ def train_dem_refinement(input1_files, input2_files, target_files=None,
         history["psnr"].append(avg_psnr)
         history["lr"].append(lr)
 
-        print(f"Época [{epoch+1}/{epochs}] - Loss média: {avg_total:.6f} | PSNR: {avg_psnr:.3f} dB | SSIM_loss: {avg_ssim:.4f} | LR: {lr:.6f}")
+        print(f"Época [{epoch+1}/{epochs}] - Loss: {avg_total:.6f} | PSNR: {avg_psnr:.3f} dB | SSIM_loss: {avg_ssim:.4f} | LR: {lr:.6f}")
 
     elapsed = time.time() - start_time
     print(f"Tempo total de treinamento: {elapsed/60:.2f} minutos")
 
-    # Após o treinamento, salvar métricas e gerar plots
+    # Salvar métricas e plots
     save_metrics_and_plots(history, output_dir=output_metrics_dir)
 
     return model, history
 
 
 # ================================
-# Funções de salvamento e plot
+# Funções de salvamento e plot (mantidas)
 # ================================
 def save_plot(x, y, title, ylabel, color, filename, output_dir="output_metrics", fill=False, marker=None):
     plt.figure(figsize=(7,4))
@@ -465,7 +577,7 @@ def save_metrics_and_plots(history, output_dir="output_metrics"):
 
     # Gráfico consolidado
     fig, axes = plt.subplots(4, 2, figsize=(12, 10))
-    fig.suptitle("Treinamento U-Net (mask-aware)", fontsize=14, fontweight='bold')
+    fig.suptitle("Treinamento U-Net (Z-score + Curvature Loss)", fontsize=14, fontweight='bold')
 
     axes[0, 0].plot(history["epoch"], history["total_loss"], color='blue', label='Total Loss')
     axes[0, 0].fill_between(history["epoch"], history["total_loss"], alpha=0.2, color='blue')
@@ -489,7 +601,6 @@ def save_metrics_and_plots(history, output_dir="output_metrics"):
     axes[3, 0].plot(history["epoch"], history["psnr"], color='darkgreen', marker='o', label='PSNR')
     axes[3, 0].set_title("PSNR (dB)"); axes[3, 0].legend()
 
-    # Linha vazia no último subplot para completar a grade
     axes[3, 1].axis('off')
 
     for ax in axes.flat:
@@ -504,7 +615,7 @@ def save_metrics_and_plots(history, output_dir="output_metrics"):
 
 
 # ================================
-# Geração de DEM refinado (mantive sua função)
+# Geração de DEM refinado
 # ================================
 def generate_refined_dem(
     model_path, input_anadem_path, output_path,
@@ -515,12 +626,11 @@ def generate_refined_dem(
 
     checkpoint = torch.load(model_path, map_location=device)
 
-    # Modelo treinado com 2 canais, mas vamos alimentar com apenas 1
     model = DEMRefinementUNet(in_channels=2, out_channels=1, base_filters=32, depth=4).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
-    print("Modelo carregado para refinamento de DEM (modo inferência - apenas ANADEM)")
+    print("Modelo carregado para refinamento de DEM (modo inferência)")
 
     with rasterio.open(input_anadem_path) as src:
         img = src.read(1).astype(np.float32)
@@ -529,7 +639,7 @@ def generate_refined_dem(
 
         print(f"Dimensões ANADEM: {img.shape}")
 
-        # Normalização global
+        # *** NORMALIZAÇÃO Z-SCORE (mesma do treinamento) ***
         valid_mask = np.isfinite(img)
         if nodata is not None:
             valid_mask &= (img != nodata)
@@ -539,12 +649,18 @@ def generate_refined_dem(
             return
 
         valid_data = img[valid_mask]
-        p2, p98 = np.percentile(valid_data, [2, 98])
+        mean = np.mean(valid_data)
+        std = np.std(valid_data)
+
+        print(f"Stats ANADEM: mean={mean:.2f}, std={std:.2f}")
 
         img_norm = np.zeros_like(img)
-        img_norm[valid_mask] = np.clip((img[valid_mask] - p2) / (p98 - p2 + 1e-8), 0, 1)
-
-        print(f"Stats ANADEM: p2={p2:.2f}, p98={p98:.2f}")
+        if std > 1e-6:
+            img_norm[valid_mask] = (img[valid_mask] - mean) / std
+            img_norm = np.clip(img_norm, -3, 3)
+            img_norm = (img_norm + 3) / 6
+        else:
+            img_norm[valid_mask] = 0.5
 
         out_height, out_width = img.shape
         output_array = np.zeros((out_height, out_width), dtype=np.float32)
@@ -576,10 +692,10 @@ def generate_refined_dem(
                 weight_mask = np.zeros((tile_size, tile_size), dtype=np.float32)
                 weight_mask[:tile_h, :tile_w] = hann_window[:tile_h, :tile_w]
 
-                # Duplicar o canal ANADEM
+                # Duplicar o canal ANADEM (modelo foi treinado com 2 canais)
                 tile_input = torch.stack([
                     torch.from_numpy(tile_padded),
-                    torch.from_numpy(tile_padded)  # Duplicado
+                    torch.from_numpy(tile_padded)
                 ]).unsqueeze(0).to(device).float()  # Shape: [1, 2, H, W]
 
                 with torch.no_grad():
@@ -603,8 +719,10 @@ def generate_refined_dem(
         if np.any(valid_weights):
             output_array[valid_weights] /= weight_array[valid_weights]
 
-        # Desnormalizar
-        output_array = output_array * (p98 - p2 + 1e-8) + p2
+        # *** DESNORMALIZAÇÃO Z-SCORE ***
+        # Reverter: (x * 6) - 3 = z-score, depois z * std + mean = valor original
+        output_array = (output_array * 6) - 3  # Volta para z-score
+        output_array = output_array * std + mean  # Volta para escala original
 
         # Marcar nodata
         if nodata is not None:
@@ -627,21 +745,52 @@ if __name__ == "__main__":
     input1_files = ["dados/anadem_5m.tif"]  # ANADEM menos detalhado
     input2_files = ["dados/geosampa_5m_reprojetado.tif"]  # GeoSampa mais detalhado
 
-    # TREINAR
+    # ========================================
+    # TREINAR com as modificações
+    # ========================================
+    print("\n" + "="*60)
+    print("MODIFICAÇÕES IMPLEMENTADAS:")
+    print("="*60)
+    print("1. Normalização Z-score (preserva feições sutis)")
+    print("2. Curvature Loss (detecta concavidades/rios)")
+    print("3. Patch size reduzido: 128x128 (foco em detalhes)")
+    print("4. Augmentation sem ruído (preserva estruturas)")
+    print("5. Visualização de patches durante treino")
+    print("="*60 + "\n")
+
     model, history = train_dem_refinement(
         input1_files, input2_files,
-        epochs=50,
+        epochs=30,
         batch_size=4,
-        patch_size=256,
-        save_path="model/dem_refinement_unet3.pth",
-        output_metrics_dir="output_metrics"
+        patch_size=128,  # Reduzido de 256
+        save_path="model/dem_refinement_unet_zscore.pth",
+        output_metrics_dir="output_metrics_zscore"
     )
 
+    # ========================================
     # INFERÊNCIA (apenas ANADEM)
+    # ========================================
+    print("\n" + "="*60)
+    print("INICIANDO INFERÊNCIA")
+    print("="*60 + "\n")
+    
     generate_refined_dem(
-        "model/dem_refinement_unet3.pth",
+        "model/dem_refinement_unet_zscore.pth",
         input_anadem_path="dados/ANADEM_Recorte_IPT_5m.tif",
-        output_path="output/anadem_u_net3.tif",
+        output_path="output/anadem_refined_zscore.tif",
         tile_size=256,
         overlap=0.5
     )
+    
+    print("\n" + "="*60)
+    print("TREINAMENTO E INFERÊNCIA CONCLUÍDOS!")
+    print("="*60)
+    print("\nPRÓXIMOS PASSOS:")
+    print("1. Verifique as imagens em: debug_patches/")
+    print("2. Compare visualmente com o resultado anterior")
+    print("3. Se ainda não capturar rios, considere:")
+    print("   - Aumentar peso da curvature loss (0.3 ou 0.4)")
+    print("   - Reduzir patch_size para 64x64")
+    print("   - Treinar por mais épocas (100+)")
+    print("   - Adicionar mais dados de treinamento")
+    print("="*60 + "\n")

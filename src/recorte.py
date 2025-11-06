@@ -1,111 +1,151 @@
-import rasterio
+# ...existing code...
 import os
-from rasterio.mask import mask
+import math
+import rasterio
+from rasterio import windows
+from rasterio.warp import transform_bounds, reproject, Resampling
+from rasterio.transform import from_bounds
 from shapely.geometry import box
-from rasterio.features import geometry_mask
-import shutil
-from rasterio.windows import from_bounds, transform as window_transform
-import numpy as np
 
-def recortar_raster_por_coordenadas(input_raster, minx, miny, maxx, maxy, output_raster):
-    """
-    Recorta um raster usando um retângulo de coordenadas geográficas.
-    """
-    bbox = box(minx, miny, maxx, maxy)
-    geometries = [bbox]
+def print_source_info(src_fp, dst_crs="EPSG:31983"):
+    if not os.path.exists(src_fp):
+        raise SystemExit(f"Source not found: {src_fp}")
+    with rasterio.open(src_fp) as src:
+        print("SRC PATH:", src_fp)
+        print("SRC CRS:", src.crs)
+        print("SRC width,height:", src.width, src.height)
+        print("SRC transform:", src.transform)
+        print("SRC bounds (src CRS):", src.bounds)
+        tb = transform_bounds(src.crs, dst_crs, *src.bounds, densify_pts=21)
+        print(f"SRC bounds in {dst_crs}:", tb)
+        minx, miny, maxx, maxy = tb
+        cx = (minx + maxx) / 2.0
+        cy = (miny + maxy) / 2.0
+        print("Center in", dst_crs, ":", (cx, cy))
+        return tb, (cx, cy)
 
-    if not os.path.exists(input_raster):
-        print(f"Erro: Arquivo de entrada não encontrado: {input_raster}")
-        return None
+def suggest_centered_bbox(tb_dst, size_m=2000):
+    minx, miny, maxx, maxy = tb_dst
+    cx = (minx + maxx) / 2.0
+    cy = (miny + maxy) / 2.0
+    half = size_m / 2.0
+    xmin = max(minx, cx - half)
+    xmax = min(maxx, cx + half)
+    ymin = max(miny, cy - half)
+    ymax = min(maxy, cy + half)
+    if (xmax - xmin) < size_m:
+        diff = size_m - (xmax - xmin)
+        xmin = max(minx, xmin - diff/2.0)
+        xmax = min(maxx, xmax + diff/2.0)
+    if (ymax - ymin) < size_m:
+        diff = size_m - (ymax - ymin)
+        ymin = max(miny, ymin - diff/2.0)
+        ymax = min(maxy, ymax + diff/2.0)
+    return (float(xmin), float(ymin), float(xmax), float(ymax))
 
-    try:
-        with rasterio.open(input_raster) as src:
-            out_image, out_transform = mask(src, geometries, crop=True)
-            out_meta = src.meta.copy()
+def crop_reproject_window(src_fp,
+                          dst_fp,
+                          desired_bbox_31983,
+                          other_tif_paths=None,
+                          dst_crs="EPSG:31983",
+                          dst_res=5,
+                          resampling=Resampling.bilinear,
+                          num_threads=4):
+    other_tif_paths = other_tif_paths or []
+    desired_box = box(*desired_bbox_31983)
 
-            out_meta.update({
-                "driver": "GTiff",
-                "height": out_image.shape[1],
-                "width": out_image.shape[2],
-                "transform": out_transform
-            })
+    # check intersection with other tifs (transform their bounds to dst_crs)
+    for ot in other_tif_paths:
+        if not os.path.exists(ot):
+            continue
+        with rasterio.open(ot) as other:
+            other_bounds_31983 = transform_bounds(other.crs, dst_crs, *other.bounds, densify_pts=21)
+            other_box = box(*other_bounds_31983)
+            if desired_box.intersects(other_box):
+                raise SystemExit(f"Desired bbox intersects other tif: {ot}")
 
-            with rasterio.open(output_raster, "w", **out_meta) as dest:
-                dest.write(out_image)
+    if not os.path.exists(src_fp):
+        raise SystemExit(f"Source file not found: {src_fp}")
 
-            print(f" Recorte salvo em: {output_raster}")
-            print(f" Dimensões: {out_image.shape[1]} x {out_image.shape[2]}")
-            return output_raster
+    with rasterio.open(src_fp) as src:
+        src_crs = src.crs
+        # transform desired bbox (31983) to source CRS
+        minx_s, miny_s, maxx_s, maxy_s = transform_bounds(dst_crs, src_crs, *desired_bbox_31983, densify_pts=21)
 
-    except ValueError as e:
-        print(f"Erro ao recortar o raster: {e}")
-        return None
+        # build pixel window on source
+        win = windows.from_bounds(minx_s, miny_s, maxx_s, maxy_s, src.transform)
 
+        col_off = int(math.floor(win.col_off))
+        row_off = int(math.floor(win.row_off))
+        width = int(math.ceil(win.width + (win.col_off - col_off)))
+        height = int(math.ceil(win.height + (win.row_off - row_off)))
 
-data_dir = "dados"
-anadem_path = os.path.join(data_dir, "ANADEM_AricanduvaBufferUTM.tif")
-geosampa_path = os.path.join(data_dir, "MDTGeosampa_AricanduvaBufferUTM.tif")
+        col_off = max(0, col_off)
+        row_off = max(0, row_off)
+        width = min(width, src.width - col_off)
+        height = min(height, src.height - row_off)
 
-minx_val = 343933.2525743812
-maxx_val = 347833.2525743812
-miny_val = 7390528.299063631
-maxy_val = 7396378.299063631
+        if width <= 0 or height <= 0:
+            raise SystemExit("A janela calculada está fora do raster fonte.")
 
-minx_val2 = 349483.2525743812
-maxx_val2 = 353683.2525743812
-miny_val2 = 7387888.299063631
-maxy_val2 = 7390588.299063631
+        win = windows.Window(col_off, row_off, width, height)
+        src_win_bounds = windows.bounds(win, src.transform)
 
-# recorta/subtrai região de sao paulo
-# Caminhos dos arquivos
-tif_sp = r"D:\casptone\MDTGeosampa\MDT_sampa-ZSTD.tif"
-tif_regiao = os.path.join(data_dir, "ANADEM_Recorte_IPT_5m.tif")
-saida = "saopaulo_menos_teste.tif"
+        dst_minx, dst_miny, dst_maxx, dst_maxy = transform_bounds(src_crs, dst_crs, *src_win_bounds, densify_pts=21)
+        dst_width = int(math.ceil((dst_maxx - dst_minx) / dst_res))
+        dst_height = int(math.ceil((dst_maxy - dst_miny) / dst_res))
+        if dst_width <= 0 or dst_height <= 0:
+            raise SystemExit("Dimensões destino inválidas. Verifique bbox e resolução.")
 
-# Abrir os rasters e processar apenas a janela de sobreposição (evita alocar o raster inteiro)
-with rasterio.open(tif_sp) as sp, rasterio.open(tif_regiao) as regiao:
-    # Bounds da região menor (minx, miny, maxx, maxy)
-    minx, miny, maxx, maxy = regiao.bounds
+        dst_transform = from_bounds(dst_minx, dst_miny, dst_maxx, dst_maxy, dst_width, dst_height)
 
-    # Calcular interseção com os bounds do raster grande
-    sp_left, sp_bottom, sp_right, sp_top = sp.bounds
-    ov_minx = max(minx, sp_left)
-    ov_miny = max(miny, sp_bottom)
-    ov_maxx = min(maxx, sp_right)
-    ov_maxy = min(maxy, sp_top)
+        profile = src.profile.copy()
+        profile.update({
+            "crs": dst_crs,
+            "transform": dst_transform,
+            "width": dst_width,
+            "height": dst_height,
+            "compress": "LZW",
+            "tiled": False,
+            "bigtiff": "YES",
+            "driver": "GTiff",
+            "count": src.count,
+            "dtype": src.dtypes[0]
+        })
 
-    if ov_minx >= ov_maxx or ov_miny >= ov_maxy:
-        print("Sem sobreposição entre os rasters. Nenhuma alteração necessária.")
-    else:
-        # Janela que cobre apenas a área de sobreposição no raster grande
-        win = from_bounds(ov_minx, ov_miny, ov_maxx, ov_maxy, transform=sp.transform)
-        win = win.round_offsets().round_shape()  # alinhar a janela a pixels inteiros
-        win_transform = window_transform(win, sp.transform)
+        os.makedirs(os.path.dirname(dst_fp), exist_ok=True)
+        print(f"Recortando janela (fonte pixels): col_off={col_off}, row_off={row_off}, width={width}, height={height}")
+        print(f"Bounds fonte (CRS fonte): {src_win_bounds}")
+        print(f"Destino: {dst_width}x{dst_height}, transform: {dst_transform}")
 
-        # Ler apenas a janela do raster grande
-        sp_window_data = sp.read(1, window=win)
-        print(f"Lido window {win} com shape {sp_window_data.shape}")
+        with rasterio.open(dst_fp, "w", **profile) as dst:
+            for b in range(1, src.count + 1):
+                arr = src.read(b, window=win)
+                src_win_transform = windows.transform(win, src.transform)
+                reproject(
+                    source=arr,
+                    destination=rasterio.band(dst, b),
+                    src_transform=src_win_transform,
+                    src_crs=src_crs,
+                    dst_transform=dst_transform,
+                    dst_crs=dst_crs,
+                    resampling=resampling,
+                    num_threads=num_threads
+                )
+    return dst_fp
 
-        # Geometria da área de sobreposição (usar a interseção)
-        geom_overlap = [box(ov_minx, ov_miny, ov_maxx, ov_maxy)]
+if __name__ == "__main__":
+    # adjust these paths if needed
+    src_path = r"D:\git\capstone_ipt\saopaulo_menos_teste.tif"
+    dst_path = r"D:\git\capstone_ipt\dados\sp_5m_tile.tif"
+    other_tifs = [r"D:\git\capstone_ipt\output\anadem_u_net2.tif"]  # don't overlap these
 
-        # Criar máscara apenas na shape da janela (geometry_mask(..., invert=True) retorna True dentro da geometria)
-        mask_regiao = geometry_mask(
-            geom_overlap,
-            transform=win_transform,
-            invert=True,
-            out_shape=(sp_window_data.shape[0], sp_window_data.shape[1])
-        )
+    # inspect source and get suggested bbox (centered 2000m box)
+    tb_dst, center = print_source_info(src_path, dst_crs="EPSG:31983")
+    suggested = suggest_centered_bbox(tb_dst, size_m=2000)
+    print("\nUsing suggested bbox (EPSG:31983):", suggested)
 
-        # Definir valor de preenchimento: nodata do raster grande ou 0 se não definido
-        fill_value = sp.nodata if sp.nodata is not None else 0
-
-        # Aplicar a máscara: zera ONDE a geometria existe (mask_regiao == True)
-        sp_window_data[mask_regiao] = fill_value
-
-        # Copiar arquivo original para saída (evita leitura inteira) e escrever somente a janela modificada
-        shutil.copyfile(tif_sp, saida)
-        with rasterio.open(saida, 'r+') as dst:
-            dst.write(sp_window_data, 1, window=win)
-
-        print("✅ Recorte concluído (janela aplicada):", saida)
+    # if you want a different size, change size_m above or replace `suggested` with your bbox
+    out = crop_reproject_window(src_path, dst_path, suggested, other_tif_paths=other_tifs, dst_res=5, num_threads=4)
+    print("Arquivo gerado:", out)
+# ...existing code...
