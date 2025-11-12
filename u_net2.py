@@ -492,7 +492,7 @@ def train_dem_refinement(input1_files, input2_files, target_files=None,
             # Visualizar patches a cada 100 batches
             if batch_idx % 100 == 0:
                 print(f"Época [{epoch+1}/{epochs}], Batch [{batch_idx}], Loss: {loss.item():.6f}")
-                visualize_batch(inputs, targets, predictions, epoch, batch_idx)
+                # visualize_batch(inputs, targets, predictions, epoch, batch_idx)
 
         # Médias por época
         avg_total = epoch_total_loss / num_batches if num_batches > 0 else float('inf')
@@ -738,59 +738,38 @@ def generate_refined_dem(
 
 
 # ================================
-# Execução exemplo (main)
+# Execução 
 # ================================
 if __name__ == "__main__":
     # Caminhos dos arquivos (adapte conforme necessário)
-    input1_files = ["dados/anadem_5m.tif"]  # ANADEM menos detalhado
+    input1_files = ["dados/geosampa_30m_reamostrado_5m.tif"]  # ANADEM menos detalhado
     input2_files = ["dados/geosampa_5m_reprojetado.tif"]  # GeoSampa mais detalhado
 
     # ========================================
-    # TREINAR com as modificações
-    # ========================================
-    print("\n" + "="*60)
-    print("MODIFICAÇÕES IMPLEMENTADAS:")
-    print("="*60)
-    print("1. Normalização Z-score (preserva feições sutis)")
-    print("2. Curvature Loss (detecta concavidades/rios)")
-    print("3. Patch size reduzido: 128x128 (foco em detalhes)")
-    print("4. Augmentation sem ruído (preserva estruturas)")
-    print("5. Visualização de patches durante treino")
-    print("="*60 + "\n")
 
     model, history = train_dem_refinement(
         input1_files, input2_files,
-        epochs=30,
+        epochs=120,
         batch_size=4,
         patch_size=128,  # Reduzido de 256
-        save_path="model/dem_refinement_unet_zscore.pth",
+        save_path="model/dem_refinement_f.pth",
         output_metrics_dir="output_metrics_zscore"
     )
 
     # ========================================
-    # INFERÊNCIA (apenas ANADEM)
+    # INFERÊNCIA
     # ========================================
     print("\n" + "="*60)
     print("INICIANDO INFERÊNCIA")
     print("="*60 + "\n")
     
     generate_refined_dem(
-        "model/dem_refinement_unet_zscore.pth",
+        "model/dem_refinement_f.pth",
         input_anadem_path="dados/ANADEM_Recorte_IPT_5m.tif",
-        output_path="output/anadem_refined_zscore.tif",
+        output_path="output/anadem_refined_f.tif",
         tile_size=256,
         overlap=0.5
     )
     
     print("\n" + "="*60)
     print("TREINAMENTO E INFERÊNCIA CONCLUÍDOS!")
-    print("="*60)
-    print("\nPRÓXIMOS PASSOS:")
-    print("1. Verifique as imagens em: debug_patches/")
-    print("2. Compare visualmente com o resultado anterior")
-    print("3. Se ainda não capturar rios, considere:")
-    print("   - Aumentar peso da curvature loss (0.3 ou 0.4)")
-    print("   - Reduzir patch_size para 64x64")
-    print("   - Treinar por mais épocas (100+)")
-    print("   - Adicionar mais dados de treinamento")
-    print("="*60 + "\n")
